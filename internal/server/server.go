@@ -62,6 +62,8 @@ func (s *Server) buildRouter() *chi.Mux {
 	r.Get("/ping", s.handlePing)
 
 	// Everything else sits behind auth. Individual endpoints land in later phases.
+	// A catch-all handler runs last so auth fires before chi's default 404 —
+	// otherwise an unauthenticated hit on an unknown path would 404 without auth.
 	r.Group(func(r chi.Router) {
 		if s.auth != nil {
 			r.Use(authMiddleware(s.auth, s.log))
@@ -75,7 +77,11 @@ func (s *Server) buildRouter() *chi.Mux {
 				})
 			})
 		}
-		// Phase 2B–2D will attach /exec, /pty, /fs handlers here.
+
+		// Phase 2B–2D will attach /exec, /pty, /fs handlers above this catch-all.
+		r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			writeError(w, s.log, http.StatusNotFound, CodeNotFound, "route not found")
+		}))
 	})
 
 	return r
@@ -86,7 +92,6 @@ func (s *Server) buildRouter() *chi.Mux {
 func (s *Server) Start() error {
 	s.log.Info("plx-exec starting",
 		"addr", s.cfg.ListenAddr,
-		"version", s.version,
 		"ping_only", s.cfg.PingOnly,
 	)
 	err := s.http.ListenAndServe()
