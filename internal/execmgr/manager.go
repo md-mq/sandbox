@@ -101,6 +101,9 @@ func (m *Manager) Delete(id string) error {
 }
 
 // Shutdown best-effort kills every running exec so the pod can terminate cleanly.
+// Kills run in parallel and are bounded by ctx's deadline — Exec.Kill does a
+// SIGTERM → 5s → SIGKILL escalation, so sequential cleanup would stall the
+// shutdown for N × 5s with a saturated cap.
 func (m *Manager) Shutdown(ctx context.Context) {
 	m.mu.Lock()
 	execs := make([]*Exec, 0, len(m.execs))
@@ -109,8 +112,25 @@ func (m *Manager) Shutdown(ctx context.Context) {
 	}
 	m.mu.Unlock()
 
+	if len(execs) == 0 {
+		return
+	}
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(len(execs))
 	for _, e := range execs {
-		_ = e.Kill()
+		go func(ex *Exec) {
+			defer wg.Done()
+			_ = ex.Kill()
+		}(e)
+	}
+	go func() { wg.Wait(); close(done) }()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		m.log.Warn("shutdown deadline reached; some execs may still be draining")
 	}
 }
 

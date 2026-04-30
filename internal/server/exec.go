@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,6 +27,7 @@ const (
 	maxLogMax        = 1 << 20
 	followDeadline   = 30 * time.Second
 	sseMaxPerPoll    = 1 << 20
+	ssePollInterval  = 100 * time.Millisecond
 )
 
 var allowedSignals = map[string]syscall.Signal{
@@ -161,7 +161,9 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	select {
 	case <-e.Done():
 	case <-r.Context().Done():
-		// Caller left before the exec finished — best-effort kill.
+		// Belt-and-braces: exec.CommandContext already sends SIGKILL on cancel,
+		// but Exec.Kill does SIGTERM → 5s → SIGKILL which is friendlier to the
+		// user's process (gives it a chance to flush on their own terms).
 		_ = e.Kill()
 		return
 	}
@@ -212,13 +214,18 @@ func (s *Server) handleExecStream(w http.ResponseWriter, r *http.Request) {
 
 	writeSSE(w, flusher, "start", map[string]any{
 		"exec_id":    e.ID,
-		"pid":        0, // raw pid is not exposed over the wire
-		"started_at": e.StartedAt.Format(time.RFC3339Nano),
+		"pid":        e.PID,
+		"started_at": e.StartedAt,
 	})
 
 	ctx := r.Context()
 	ping := time.NewTicker(3 * time.Second)
 	defer ping.Stop()
+
+	// Reusable idle-poll timer. time.After allocated per loop iteration leaked
+	// 10 timers/sec during idle execs — tiny, but avoidable.
+	idle := time.NewTimer(ssePollInterval)
+	defer idle.Stop()
 
 	var stdoutOff, stderrOff int64
 	for {
@@ -246,6 +253,7 @@ func (s *Server) handleExecStream(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
+		resetTimer(idle, ssePollInterval)
 		select {
 		case <-ctx.Done():
 			return
@@ -271,15 +279,27 @@ func (s *Server) handleExecStream(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-ping.C:
 			writeSSE(w, flusher, "ping", map[string]any{})
-		case <-time.After(100 * time.Millisecond):
+		case <-idle.C:
 		}
 	}
 }
 
+// resetTimer drains any pending firing then resets to d. Correct reset idiom
+// per the time.Timer docs.
+func resetTimer(t *time.Timer, d time.Duration) {
+	if !t.Stop() {
+		select {
+		case <-t.C:
+		default:
+		}
+	}
+	t.Reset(d)
+}
+
 type execBgResponse struct {
-	ExecID    string `json:"exec_id"`
-	PID       int    `json:"pid"`
-	StartedAt string `json:"started_at"`
+	ExecID    string    `json:"exec_id"`
+	PID       int       `json:"pid"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 func (s *Server) handleExecBg(w http.ResponseWriter, r *http.Request) {
@@ -294,21 +314,22 @@ func (s *Server) handleExecBg(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusAccepted, execBgResponse{
 		ExecID:    e.ID,
-		PID:       0,
-		StartedAt: e.StartedAt.Format(time.RFC3339Nano),
+		PID:       e.PID,
+		StartedAt: e.StartedAt,
 	})
 }
 
 type bgStatusResponse struct {
-	ExecID      string `json:"exec_id"`
-	State       string `json:"state"`
-	StartedAt   string `json:"started_at"`
-	FinishedAt  string `json:"finished_at,omitempty"`
-	DurationMS  int64  `json:"duration_ms,omitempty"`
-	ExitCode    *int   `json:"exit_code"`
-	Signal      string `json:"signal,omitempty"`
-	StdoutBytes int64  `json:"stdout_bytes"`
-	StderrBytes int64  `json:"stderr_bytes"`
+	ExecID      string     `json:"exec_id"`
+	PID         int        `json:"pid"`
+	State       string     `json:"state"`
+	StartedAt   time.Time  `json:"started_at"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
+	DurationMS  int64      `json:"duration_ms,omitempty"`
+	ExitCode    *int       `json:"exit_code"`
+	Signal      string     `json:"signal,omitempty"`
+	StdoutBytes int64      `json:"stdout_bytes"`
+	StderrBytes int64      `json:"stderr_bytes"`
 }
 
 func (s *Server) handleExecBgStatus(w http.ResponseWriter, r *http.Request) {
@@ -320,13 +341,15 @@ func (s *Server) handleExecBgStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := bgStatusResponse{
 		ExecID:      e.ID,
+		PID:         e.PID,
 		State:       e.State(),
-		StartedAt:   e.StartedAt.Format(time.RFC3339Nano),
+		StartedAt:   e.StartedAt,
 		StdoutBytes: fileSize(e.StdoutPath()),
 		StderrBytes: fileSize(e.StderrPath()),
 	}
 	if st := e.Status(); st != nil {
-		resp.FinishedAt = st.FinishedAt.Format(time.RFC3339Nano)
+		finished := st.FinishedAt
+		resp.FinishedAt = &finished
 		resp.DurationMS = st.DurationMS
 		resp.ExitCode = st.ExitCode
 		resp.Signal = st.Signal
@@ -419,7 +442,9 @@ func (s *Server) handleExecBgSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body signalRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
 		writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest, "malformed JSON body")
 		return
 	}
@@ -472,53 +497,22 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, event string, data an
 	flusher.Flush()
 }
 
-// readCapped reads up to max bytes from path and reports whether the file was longer.
+// readCapped returns (data, truncated). Reads up to max bytes; truncated is
+// true if the file was longer than max. Thin adapter over execmgr.ReadAt so we
+// have one source of truth for file-offset reads.
 func readCapped(path string, max int64) ([]byte, bool) {
-	f, err := os.Open(path)
+	data, size, err := execmgr.ReadAt(path, 0, max)
 	if err != nil {
 		return nil, false
 	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, false
-	}
-	if fi.Size() > max {
-		buf := make([]byte, max)
-		_, _ = io.ReadFull(f, buf)
-		return buf, true
-	}
-	data, _ := io.ReadAll(f)
-	return data, false
+	return data, size > int64(len(data))
 }
 
-// readChunk reads up to max bytes starting at offset, returning the data and the next offset.
+// readChunk returns (data, nextOffset, err) — the SSE handler wants cursor
+// semantics, so we adapt ReadAt's (data, fileSize) shape.
 func readChunk(path string, offset, max int64) ([]byte, int64, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, offset, err
-	}
-	defer f.Close()
-	fi, err := f.Stat()
-	if err != nil {
-		return nil, offset, err
-	}
-	if offset >= fi.Size() {
-		return nil, offset, nil
-	}
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return nil, offset, err
-	}
-	toRead := fi.Size() - offset
-	if toRead > max {
-		toRead = max
-	}
-	buf := make([]byte, toRead)
-	n, err := io.ReadFull(f, buf)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return nil, offset, err
-	}
-	return buf[:n], offset + int64(n), nil
+	data, _, err := execmgr.ReadAt(path, offset, max)
+	return data, offset + int64(len(data)), err
 }
 
 func fileSize(path string) int64 {

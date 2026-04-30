@@ -18,13 +18,15 @@ const (
 )
 
 // Meta is the on-disk launch record. Written once, never mutated.
+// Env values are nullable: a nil pointer records "unset this key in the child",
+// distinct from an empty string meaning "set the key but with no value".
 type Meta struct {
-	ExecID    string            `json:"exec_id"`
-	Command   []string          `json:"command"`
-	Env       map[string]string `json:"env,omitempty"`
-	Workdir   string            `json:"workdir"`
-	TimeoutMS int               `json:"timeout_ms"`
-	StartedAt time.Time         `json:"started_at"`
+	ExecID    string             `json:"exec_id"`
+	Command   []string           `json:"command"`
+	Env       map[string]*string `json:"env,omitempty"`
+	Workdir   string             `json:"workdir"`
+	TimeoutMS int                `json:"timeout_ms"`
+	StartedAt time.Time          `json:"started_at"`
 }
 
 // Status is the on-disk termination record. ExitCode is nullable for orphaned execs.

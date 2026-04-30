@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -116,7 +117,13 @@ func TestExec_ProcessGroupCleanup(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if gcPid == 0 {
-		t.Skip("grandchild did not start — environment lacks sh or is very slow")
+		// On Linux CI the grandchild always starts within 3s; failure indicates
+		// either a real regression or genuinely broken shell semantics. Only
+		// skip on non-Linux dev machines.
+		if runtime.GOOS == "linux" {
+			t.Fatalf("grandchild did not start within 3s (Linux CI)")
+		}
+		t.Skip("grandchild did not start — non-Linux dev machine, skipping")
 	}
 
 	if err := mgr.Delete(e.ID); err != nil {

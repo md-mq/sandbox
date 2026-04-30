@@ -15,6 +15,11 @@ const (
 	LogStderr
 )
 
+// followPollInterval is how often ReadLog re-checks the log file when
+// follow=true and there's nothing new to read. Exported-ish (lowercase but
+// addressable from tests in the same package) so test runs can shorten it.
+var followPollInterval = 100 * time.Millisecond
+
 type LogRead struct {
 	Data       []byte
 	Offset     int64
@@ -76,7 +81,7 @@ func (e *Exec) ReadLog(ctx context.Context, stream LogStream, offset, max int64,
 		if remaining <= 0 {
 			return res, nil
 		}
-		sleep := 100 * time.Millisecond
+		sleep := followPollInterval
 		if remaining < sleep {
 			sleep = remaining
 		}
@@ -91,8 +96,14 @@ func (e *Exec) ReadLog(ctx context.Context, stream LogStream, offset, max int64,
 	}
 }
 
-// readAt reads up to max bytes starting at offset and also returns the current
-// file size so the caller can detect "at end of file" without re-statting.
+// ReadAt reads up to max bytes from path starting at offset. Returns the data,
+// the file size at read time (so callers can tell "at end of file" without
+// re-statting), and any error. Used by both ReadLog's follow-poll and the
+// server's one-shot and SSE handlers.
+func ReadAt(path string, offset, max int64) ([]byte, int64, error) {
+	return readAt(path, offset, max)
+}
+
 func readAt(path string, offset, max int64) ([]byte, int64, error) {
 	f, err := os.Open(path)
 	if err != nil {

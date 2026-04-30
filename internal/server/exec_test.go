@@ -3,13 +3,18 @@ package server
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/polyaxon/sandbox/internal/config"
 	"github.com/polyaxon/sandbox/internal/execmgr"
 )
 
@@ -261,7 +266,19 @@ func TestExec_CapExceeded(t *testing.T) {
 	if resp.StatusCode != http.StatusTooManyRequests {
 		t.Fatalf("status = %d, want 429", resp.StatusCode)
 	}
-	resp.Body.Close()
+	// Retry-After header must be present so HTTP clients honoring it can back off.
+	if ra := resp.Header.Get("Retry-After"); ra == "" {
+		t.Errorf("Retry-After header missing on 429")
+	}
+	// Body should carry a machine-readable hint too.
+	var env errorEnvelope
+	decodeJSON(t, resp, &env)
+	if env.Error.Code != "rate_limited" {
+		t.Errorf("error.code = %q, want rate_limited", env.Error.Code)
+	}
+	if hint, ok := env.Error.Details["retry_after_ms"]; !ok || hint == nil {
+		t.Errorf("error.details.retry_after_ms missing: %v", env.Error.Details)
+	}
 }
 
 func TestExec_PingReflectsRunningCount(t *testing.T) {
@@ -283,6 +300,92 @@ func TestExec_PingReflectsRunningCount(t *testing.T) {
 	decodeJSON(t, r, &p)
 	if p.ExecsRunning != 2 {
 		t.Errorf("execs_running = %d, want 2", p.ExecsRunning)
+	}
+}
+
+// TestExec_RestartRecovery verifies a terminal bg exec remains visible via
+// HTTP after plx-exec restarts. Starts a bg exec, waits for it to exit, tears
+// down the server, spins a fresh Server against the same state dir, and asserts
+// the exec is still queryable with its final status.
+func TestExec_RestartRecovery(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokenPath, []byte(testToken), 0o400); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	stateDir := filepath.Join(dir, "state")
+
+	newSrv := func() *Server {
+		cfg := &config.Config{
+			ListenAddr: ":0",
+			LogFormat:  "json",
+			TokenFile:  tokenPath,
+			StateDir:   stateDir,
+			MaxExecs:   4,
+		}
+		log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		s, err := New(cfg, log, "test")
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		return s
+	}
+
+	// First server instance: kick off a quick bg exec and wait for it to exit.
+	s1 := newSrv()
+	ts1 := httptest.NewServer(s1.Handler())
+	resp := doJSON(t, http.MethodPost, ts1.URL+"/exec/bg",
+		`{"command":["sh","-c","printf persistent-output"]}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("bg start status = %d", resp.StatusCode)
+	}
+	var start struct {
+		ExecID string `json:"exec_id"`
+	}
+	decodeJSON(t, resp, &start)
+
+	// Wait for the exec to exit so status.json is on disk.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		r := doJSON(t, http.MethodGet, ts1.URL+"/exec/bg/"+start.ExecID, "")
+		var st bgStatusResponse
+		decodeJSON(t, r, &st)
+		if st.State == execmgr.StateExited {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Tear down the first server, wait for shutdown to complete.
+	ts1.Close()
+	_ = s1.Shutdown(context.Background())
+
+	// Second server instance: same state dir, fresh manager. Recovery should
+	// pick the terminal record up.
+	s2 := newSrv()
+	ts2 := httptest.NewServer(s2.Handler())
+	t.Cleanup(ts2.Close)
+
+	r := doJSON(t, http.MethodGet, ts2.URL+"/exec/bg/"+start.ExecID, "")
+	if r.StatusCode != http.StatusOK {
+		t.Fatalf("status after restart = %d, want 200", r.StatusCode)
+	}
+	var st bgStatusResponse
+	decodeJSON(t, r, &st)
+	if st.State != execmgr.StateExited {
+		t.Errorf("state after restart = %q, want exited", st.State)
+	}
+	if st.ExitCode == nil || *st.ExitCode != 0 {
+		t.Errorf("exit_code after restart = %v, want 0", st.ExitCode)
+	}
+
+	// Logs must still be readable — same offset semantics.
+	r = doJSON(t, http.MethodGet,
+		ts2.URL+"/exec/bg/"+start.ExecID+"/logs?stream=stdout&offset=0&max_bytes=1024", "")
+	var logs bgLogsResponse
+	decodeJSON(t, r, &logs)
+	if !strings.Contains(logs.Data, "persistent-output") {
+		t.Errorf("logs data = %q, want to contain persistent-output", logs.Data)
 	}
 }
 

@@ -35,6 +35,7 @@ type Exec struct {
 	Dir       string
 	StartedAt time.Time
 	TimeoutMS int
+	PID       int // 0 until the child starts; unchanged by reap / recovery
 
 	cmd      *exec.Cmd
 	pgid     int
@@ -75,19 +76,12 @@ func newExec(ctx context.Context, id, stateDir string, req StartRequest, log *sl
 	env := mergeEnv(os.Environ(), req.Env)
 
 	// Meta is persisted before the fork so recovery can see the intent even if
-	// plx-exec crashes between MkdirAll and cmd.Start.
-	envMeta := make(map[string]string)
-	for k, v := range req.Env {
-		if v != nil {
-			envMeta[k] = *v
-		} else {
-			envMeta[k] = ""
-		}
-	}
+	// plx-exec crashes between MkdirAll and cmd.Start. Env preserves nil
+	// pointers so the "unset" decision is auditable.
 	meta := &Meta{
 		ExecID:    id,
 		Command:   req.Command,
-		Env:       envMeta,
+		Env:       req.Env,
 		Workdir:   req.Workdir,
 		TimeoutMS: req.TimeoutMS,
 		StartedAt: e.StartedAt,
@@ -141,6 +135,7 @@ func (e *Exec) start() error {
 		return fmt.Errorf("start: %w", err)
 	}
 
+	e.PID = e.cmd.Process.Pid
 	pgid, err := syscall.Getpgid(e.cmd.Process.Pid)
 	if err != nil {
 		// Fall back to the pid so signalling still targets something.
@@ -241,15 +236,21 @@ func buildStatus(ps *os.ProcessState, waitErr error, timedOut bool, startedAt ti
 }
 
 func (e *Exec) finalize(s *Status) {
-	e.statusMu.Lock()
-	e.status = s
-	e.statusMu.Unlock()
-
-	e.setState(s.State)
-
+	// Write on-disk status first so crash recovery sees the terminal record
+	// even if we crash between these steps.
 	if err := WriteStatusAtomic(e.Dir, s); err != nil {
 		e.log.Error("write status", "err", err)
 	}
+
+	// Publish status and close `done` BEFORE setting the terminal state. That
+	// way any external caller that observes a terminal state via State() is
+	// guaranteed to also see isDone()==true and status!=nil on the next read.
+	// Reversed ordering caused flaky test failures where a client polled
+	// state=exited but then saw EOF=false in a subsequent /logs call because
+	// done had not yet closed.
+	e.statusMu.Lock()
+	e.status = s
+	e.statusMu.Unlock()
 
 	e.doneMu.Lock()
 	select {
@@ -258,6 +259,8 @@ func (e *Exec) finalize(s *Status) {
 		close(e.done)
 	}
 	e.doneMu.Unlock()
+
+	e.setState(s.State)
 }
 
 func (e *Exec) closeLogs() {
