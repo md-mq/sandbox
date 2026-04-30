@@ -14,12 +14,14 @@ const (
 	envLogFormat       = "POLYAXON_SANDBOX_LOG_FORMAT"
 	envShutdownTimeout = "POLYAXON_SANDBOX_SHUTDOWN_TIMEOUT"
 	envPingOnly        = "POLYAXON_SANDBOX_PING_ONLY"
+	envMaxExecs        = "POLYAXON_SANDBOX_MAX_EXECS"
 
 	defaultListenAddr      = ":9090"
 	defaultTokenFile       = "/opt/polyaxon/sandbox-token"
 	defaultStateDir        = "/tmp/plx-exec"
 	defaultLogFormat       = "json"
 	defaultShutdownTimeout = 10 * time.Second
+	defaultMaxExecs        = 64
 )
 
 type Config struct {
@@ -29,6 +31,7 @@ type Config struct {
 	LogFormat       string
 	ShutdownTimeout time.Duration
 	PingOnly        bool
+	MaxExecs        int
 }
 
 func Load() (*Config, error) {
@@ -39,6 +42,7 @@ func Load() (*Config, error) {
 		LogFormat:       envOr(envLogFormat, defaultLogFormat),
 		ShutdownTimeout: defaultShutdownTimeout,
 		PingOnly:        envBool(envPingOnly),
+		MaxExecs:        defaultMaxExecs,
 	}
 
 	if raw := os.Getenv(envShutdownTimeout); raw != "" {
@@ -47,6 +51,17 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("%s: %w", envShutdownTimeout, err)
 		}
 		cfg.ShutdownTimeout = d
+	}
+
+	if raw := os.Getenv(envMaxExecs); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", envMaxExecs, err)
+		}
+		if n < 1 {
+			return nil, fmt.Errorf("%s: must be >= 1, got %d", envMaxExecs, n)
+		}
+		cfg.MaxExecs = n
 	}
 
 	if cfg.LogFormat != "json" && cfg.LogFormat != "text" {

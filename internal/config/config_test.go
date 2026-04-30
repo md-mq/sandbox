@@ -33,6 +33,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if !cfg.PingOnly {
 		t.Errorf("PingOnly = false, want true")
 	}
+	if cfg.MaxExecs != defaultMaxExecs {
+		t.Errorf("MaxExecs = %d, want %d", cfg.MaxExecs, defaultMaxExecs)
+	}
 }
 
 func TestLoad_EnvOverrides(t *testing.T) {
@@ -98,6 +101,36 @@ func TestLoad_InvalidShutdownTimeoutErrors(t *testing.T) {
 	}
 }
 
+func TestLoad_MaxExecsOverride(t *testing.T) {
+	clearEnv(t)
+	t.Setenv(envPingOnly, "1")
+	t.Setenv(envMaxExecs, "8")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MaxExecs != 8 {
+		t.Errorf("MaxExecs = %d, want 8", cfg.MaxExecs)
+	}
+}
+
+func TestLoad_MaxExecsInvalid(t *testing.T) {
+	cases := []string{"0", "-1", "abc"}
+	for _, v := range cases {
+		t.Run(v, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv(envPingOnly, "1")
+			t.Setenv(envMaxExecs, v)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("expected error for MaxExecs=%q, got nil", v)
+			}
+		})
+	}
+}
+
 func writeTempToken(t *testing.T, content string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -112,7 +145,7 @@ func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
 		envListenAddr, envTokenFile, envStateDir,
-		envLogFormat, envShutdownTimeout, envPingOnly,
+		envLogFormat, envShutdownTimeout, envPingOnly, envMaxExecs,
 	} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
