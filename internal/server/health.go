@@ -7,15 +7,14 @@ import (
 	"time"
 )
 
-// Counters holds runtime activity counters exposed by /ping.
-// Fields are swapped to real exec/PTY managers in later phases; for 2A they stay at zero.
+// Counters is exposed to subsystems by pointer so they can increment the atomic
+// fields directly. execmgr owns ExecsRunning; PTYsAttached will be wired later.
 type Counters struct {
 	ExecsRunning atomic.Int64
 	PTYsAttached atomic.Int64
 	lastActivity atomic.Int64 // unix nanoseconds
 }
 
-// Touch records the last time a non-/ping request served.
 func (c *Counters) Touch(t time.Time) {
 	c.lastActivity.Store(t.UnixNano())
 }

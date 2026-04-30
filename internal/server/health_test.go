@@ -21,6 +21,7 @@ func newTestServer(t *testing.T, pingOnly bool) *Server {
 		ListenAddr: ":0",
 		LogFormat:  "json",
 		PingOnly:   pingOnly,
+		MaxExecs:   4,
 	}
 	if !pingOnly {
 		dir := t.TempDir()
@@ -29,6 +30,7 @@ func newTestServer(t *testing.T, pingOnly bool) *Server {
 			t.Fatalf("write token: %v", err)
 		}
 		cfg.TokenFile = path
+		cfg.StateDir = filepath.Join(dir, "state")
 	}
 
 	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -101,14 +103,28 @@ func TestAuth_WrongTokenReturns401(t *testing.T) {
 func TestAuth_CorrectTokenFallsThroughTo404(t *testing.T) {
 	s := newTestServer(t, false)
 
-	req := httptest.NewRequest(http.MethodGet, "/exec", nil)
+	// Use an unknown path so auth passes and the catch-all returns 404
+	// (avoids coupling this test to whichever real routes happen to be registered).
+	req := httptest.NewRequest(http.MethodGet, "/nope", nil)
 	req.Header.Set(headerSandboxToken, testToken)
 	rec := httptest.NewRecorder()
 	s.Handler().ServeHTTP(rec, req)
 
-	// No /exec handler is registered in 2A, so auth passes and chi returns 404.
 	if rec.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404 (auth should have passed in 2A)", rec.Code)
+		t.Fatalf("status = %d, want 404 (auth should have passed)", rec.Code)
+	}
+}
+
+func TestPingOnly_RejectsRoutes_UsesPath(t *testing.T) {
+	// sanity: keep the existing PingOnly coverage on a non-real path too
+	s := newTestServer(t, true)
+
+	req := httptest.NewRequest(http.MethodGet, "/nope", nil)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 in PingOnly mode", rec.Code)
 	}
 }
 

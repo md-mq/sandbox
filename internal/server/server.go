@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
@@ -11,9 +12,9 @@ import (
 
 	"github.com/polyaxon/sandbox/internal/auth"
 	"github.com/polyaxon/sandbox/internal/config"
+	"github.com/polyaxon/sandbox/internal/execmgr"
 )
 
-// Server wraps the HTTP server, auth, and runtime counters for plx-exec.
 type Server struct {
 	cfg      *config.Config
 	log      *slog.Logger
@@ -23,10 +24,11 @@ type Server struct {
 	start    time.Time
 	version  string
 	counters *Counters
+	mgr      *execmgr.Manager
 }
 
-// New constructs a Server from config. It loads the auth token unless PingOnly
-// is set (useful for smoke tests and local dev).
+// New loads the auth token and builds the exec manager. In PingOnly mode both
+// are skipped, which is useful for smoke tests and local dev.
 func New(cfg *config.Config, log *slog.Logger, version string) (*Server, error) {
 	s := &Server{
 		cfg:      cfg,
@@ -42,6 +44,15 @@ func New(cfg *config.Config, log *slog.Logger, version string) (*Server, error) 
 			return nil, err
 		}
 		s.auth = a
+
+		mgr, err := execmgr.NewManager(cfg.StateDir, cfg.MaxExecs, &s.counters.ExecsRunning, log)
+		if err != nil {
+			return nil, fmt.Errorf("build exec manager: %w", err)
+		}
+		if err := mgr.Recover(context.Background()); err != nil {
+			return nil, fmt.Errorf("recover execs: %w", err)
+		}
+		s.mgr = mgr
 	}
 
 	s.router = s.buildRouter()
@@ -58,18 +69,15 @@ func (s *Server) buildRouter() *chi.Mux {
 	r.Use(recoverMiddleware(s.log))
 	r.Use(loggingMiddleware(s.log))
 
-	// /ping is unauthenticated: k8s liveness probes, sidecar pings, smoke tests.
+	// /ping is unauthenticated for liveness probes.
 	r.Get("/ping", s.handlePing)
 
-	// Everything else sits behind auth. Individual endpoints land in later phases.
-	// A catch-all handler runs last so auth fires before chi's default 404 —
-	// otherwise an unauthenticated hit on an unknown path would 404 without auth.
+	// The catch-all inside the auth group ensures unknown paths 401 rather than
+	// 404 when no token is presented.
 	r.Group(func(r chi.Router) {
 		if s.auth != nil {
 			r.Use(authMiddleware(s.auth, s.log))
 		} else {
-			// PingOnly mode: any non-/ping route returns 401 so callers see a
-			// consistent signal regardless of daemon configuration.
 			r.Use(func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 					writeError(w, s.log, http.StatusUnauthorized, CodeUnauthorized,
@@ -78,7 +86,16 @@ func (s *Server) buildRouter() *chi.Mux {
 			})
 		}
 
-		// Phase 2B–2D will attach /exec, /pty, /fs handlers above this catch-all.
+		if s.mgr != nil {
+			r.Post("/exec", s.handleExec)
+			r.Post("/exec/stream", s.handleExecStream)
+			r.Post("/exec/bg", s.handleExecBg)
+			r.Get("/exec/bg/{id}", s.handleExecBgStatus)
+			r.Get("/exec/bg/{id}/logs", s.handleExecBgLogs)
+			r.Post("/exec/bg/{id}/signal", s.handleExecBgSignal)
+			r.Delete("/exec/bg/{id}", s.handleExecBgDelete)
+		}
+
 		r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			writeError(w, s.log, http.StatusNotFound, CodeNotFound, "route not found")
 		}))
@@ -87,8 +104,7 @@ func (s *Server) buildRouter() *chi.Mux {
 	return r
 }
 
-// Start runs the HTTP server until Shutdown is called. It returns nil on a
-// graceful shutdown and the underlying error otherwise.
+// Start returns nil on graceful shutdown, or the underlying error otherwise.
 func (s *Server) Start() error {
 	s.log.Info("plx-exec starting",
 		"addr", s.cfg.ListenAddr,
@@ -101,13 +117,15 @@ func (s *Server) Start() error {
 	return err
 }
 
-// Shutdown gracefully stops the HTTP server, respecting the given context's deadline.
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.log.Info("plx-exec shutting down")
+	if s.mgr != nil {
+		s.mgr.Shutdown(ctx)
+	}
 	return s.http.Shutdown(ctx)
 }
 
-// Handler exposes the router for use in tests via httptest.
+// Handler is exported for httptest-based tests.
 func (s *Server) Handler() http.Handler {
 	return s.router
 }

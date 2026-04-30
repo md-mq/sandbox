@@ -16,8 +16,7 @@ const (
 	headerRequestID    = "X-Request-Id"
 )
 
-// recoverMiddleware catches panics, logs them with a stack trace,
-// and returns a 500 with the standard error envelope.
+// recoverMiddleware logs panics with a stack trace and returns a 500 envelope.
 func recoverMiddleware(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +36,8 @@ func recoverMiddleware(log *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// statusRecorder captures the response status so loggingMiddleware can report it.
+// statusRecorder captures the response status for logging and forwards Flush
+// so SSE handlers still drain through the middleware chain.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -48,8 +48,13 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
-// loggingMiddleware logs each request as one structured line. /ping is skipped
-// to avoid log spam from liveness probes.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// loggingMiddleware emits one structured log line per request, skipping /ping.
 func loggingMiddleware(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +65,7 @@ func loggingMiddleware(log *slog.Logger) func(http.Handler) http.Handler {
 
 			reqID, err := uuid.NewV7()
 			if err != nil {
-				// Extremely unlikely; fall back to v4 so a broken clock can't kill requests.
+				// Fall back so a broken clock can't kill requests.
 				reqID = uuid.New()
 			}
 			w.Header().Set(headerRequestID, reqID.String())
@@ -80,8 +85,8 @@ func loggingMiddleware(log *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// authMiddleware enforces the X-Polyaxon-Sandbox-Token header on every wrapped route.
-// Handlers mounted outside this middleware (e.g. /ping) are unauthenticated.
+// authMiddleware enforces X-Polyaxon-Sandbox-Token on wrapped routes. /ping is
+// mounted outside the group so probes don't need a token.
 func authMiddleware(a *auth.Authenticator, log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

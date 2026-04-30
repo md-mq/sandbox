@@ -12,8 +12,9 @@ Polyaxon streams proxy. Design lives in the top-level memos:
 
 ## Status
 
-Phase 2A — binary skeleton. `/ping` works, auth middleware is wired.
-Exec, PTY, and FS endpoints land in later phases.
+Exec endpoints live: `/ping`, `/exec`, `/exec/stream`, `/exec/bg`
+(+ status, logs, signal, delete) with file-backed output and crash recovery.
+PTY and filesystem endpoints land in later phases — see `memos/sandbox/roadmap.md`.
 
 ## Build
 
@@ -46,6 +47,7 @@ Override config via env vars (all prefixed `POLYAXON_SANDBOX_`):
 | `POLYAXON_SANDBOX_LOG_FORMAT` | `json` | `json` or `text` |
 | `POLYAXON_SANDBOX_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown deadline |
 | `POLYAXON_SANDBOX_PING_ONLY` | unset | Skip token requirement (dev only) |
+| `POLYAXON_SANDBOX_MAX_EXECS` | `64` | Concurrent running exec cap; 65th returns 429 |
 
 ## Layout
 
