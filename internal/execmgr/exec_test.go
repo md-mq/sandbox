@@ -119,7 +119,8 @@ func TestExec_ProcessGroupCleanup(t *testing.T) {
 	if gcPid == 0 {
 		// On Linux CI the grandchild always starts within 3s; failure indicates
 		// either a real regression or genuinely broken shell semantics. Only
-		// skip on non-Linux dev machines.
+		// skip on non-Linux dev machines where the marker-file approach is
+		// known to be flakier.
 		if runtime.GOOS == "linux" {
 			t.Fatalf("grandchild did not start within 3s (Linux CI)")
 		}
