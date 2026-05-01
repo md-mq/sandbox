@@ -19,6 +19,7 @@ import (
 // trusts its inputs — HTTP-level validation happens in the server package.
 type StartRequest struct {
 	Command   []string
+	Tag       string
 	Env       map[string]*string // nil value = unset; *"" = keep key empty
 	Workdir   string
 	Stdin     []byte
@@ -32,6 +33,7 @@ type StartRequest struct {
 //	orphaned (terminal, recovered from a prior plx-exec crash)
 type Exec struct {
 	ID        string
+	Tag       string
 	Dir       string
 	StartedAt time.Time
 	TimeoutMS int
@@ -64,6 +66,7 @@ func newExec(ctx context.Context, id, stateDir string, req StartRequest, log *sl
 
 	e := &Exec{
 		ID:         id,
+		Tag:        req.Tag,
 		Dir:        dir,
 		StartedAt:  time.Now().UTC(),
 		TimeoutMS:  req.TimeoutMS,
@@ -80,6 +83,7 @@ func newExec(ctx context.Context, id, stateDir string, req StartRequest, log *sl
 	// pointers so the "unset" decision is auditable.
 	meta := &Meta{
 		ExecID:    id,
+		Tag:       req.Tag,
 		Command:   req.Command,
 		Env:       req.Env,
 		Workdir:   req.Workdir,

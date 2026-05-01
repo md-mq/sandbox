@@ -68,9 +68,7 @@ func (m *Manager) recoverOne(ctx context.Context, id string) error {
 		e.status = status
 		e.statusMu.Unlock()
 		close(e.done)
-		m.mu.Lock()
-		m.execs[id] = e
-		m.mu.Unlock()
+		m.registerRecovered(e)
 		return nil
 
 	case hasPid && !hasStatus:
@@ -81,11 +79,11 @@ func (m *Manager) recoverOne(ctx context.Context, id string) error {
 			// Orphans never hold a cap slot. New launches can briefly push the
 			// process total above MaxExecs, but blocking fresh work on recovered
 			// processes we can no longer wait(2) on is worse.
+			if !m.registerRecovered(e) {
+				return nil
+			}
 			// We can't wait(2) on a child we don't own.
 			go m.orphanReaper(ctx, e, pgid)
-			m.mu.Lock()
-			m.execs[id] = e
-			m.mu.Unlock()
 			return nil
 		}
 		// Dead without a status.json — exit code is unknowable.
@@ -104,9 +102,7 @@ func (m *Manager) recoverOne(ctx context.Context, id string) error {
 		e.status = s
 		e.statusMu.Unlock()
 		close(e.done)
-		m.mu.Lock()
-		m.execs[id] = e
-		m.mu.Unlock()
+		m.registerRecovered(e)
 		return nil
 	}
 
@@ -117,6 +113,7 @@ func (m *Manager) recoverOne(ctx context.Context, id string) error {
 func (m *Manager) shellExec(id, dir string, meta *Meta) *Exec {
 	return &Exec{
 		ID:         id,
+		Tag:        meta.Tag,
 		Dir:        dir,
 		StartedAt:  meta.StartedAt,
 		TimeoutMS:  meta.TimeoutMS,
@@ -125,6 +122,25 @@ func (m *Manager) shellExec(id, dir string, meta *Meta) *Exec {
 		done:       make(chan struct{}),
 		log:        m.log.With("exec_id", id),
 	}
+}
+
+func (m *Manager) registerRecovered(e *Exec) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if e.Tag != "" {
+		for _, existing := range m.execs {
+			if existing.Tag == e.Tag {
+				m.log.Warn("skip recovered exec with duplicate tag",
+					"exec_id", e.ID,
+					"tag", e.Tag,
+					"existing_id", existing.ID,
+				)
+				return false
+			}
+		}
+	}
+	m.execs[e.ID] = e
+	return true
 }
 
 // orphanReaper polls the pgid every second and finalizes the exec as orphaned

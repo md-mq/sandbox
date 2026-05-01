@@ -22,6 +22,7 @@ const (
 // distinct from an empty string meaning "set the key but with no value".
 type Meta struct {
 	ExecID    string             `json:"exec_id"`
+	Tag       string             `json:"tag,omitempty"`
 	Command   []string           `json:"command"`
 	Env       map[string]*string `json:"env,omitempty"`
 	Workdir   string             `json:"workdir"`

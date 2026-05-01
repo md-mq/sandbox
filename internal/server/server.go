@@ -90,6 +90,7 @@ func (s *Server) buildRouter() *chi.Mux {
 			r.Post("/exec", s.handleExec)
 			r.Post("/exec/stream", s.handleExecStream)
 			r.Post("/exec/bg", s.handleExecBg)
+			r.Get("/exec/bg", s.handleExecBgList)
 			r.Get("/exec/bg/{id}", s.handleExecBgStatus)
 			r.Get("/exec/bg/{id}/logs", s.handleExecBgLogs)
 			r.Post("/exec/bg/{id}/signal", s.handleExecBgSignal)

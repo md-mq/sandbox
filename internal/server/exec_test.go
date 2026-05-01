@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -309,6 +310,283 @@ func TestExec_BgLifecycle(t *testing.T) {
 	if !logs.EOF {
 		t.Errorf("EOF = false, want true after process exit")
 	}
+}
+
+func TestExec_BgTagRoundTrip(t *testing.T) {
+	s := newTestServer(t, false)
+	base := runHTTPServer(t, s)
+
+	resp := doJSON(t, http.MethodPost, base+"/exec/bg",
+		`{"command":["sleep","5"],"timeout_ms":10000,"tag":"smoke.exec"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+	var start execBgResponse
+	decodeJSON(t, resp, &start)
+	if start.Tag != "smoke.exec" {
+		t.Fatalf("response tag = %q, want smoke.exec", start.Tag)
+	}
+	t.Cleanup(func() {
+		doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "").Body.Close()
+	})
+
+	r := doJSON(t, http.MethodGet, base+"/exec/bg/"+start.ExecID, "")
+	var st bgStatusResponse
+	decodeJSON(t, r, &st)
+	if st.Tag != "smoke.exec" {
+		t.Errorf("status tag = %q, want smoke.exec", st.Tag)
+	}
+}
+
+func TestExec_BgTagValidation(t *testing.T) {
+	s := newTestServer(t, false)
+	base := runHTTPServer(t, s)
+
+	for _, tag := range []string{"bad name", "with/slash", strings.Repeat("a", 129)} {
+		body := fmt.Sprintf(`{"command":["true"],"tag":%q}`, tag)
+		resp := doJSON(t, http.MethodPost, base+"/exec/bg", body)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("tag %q status = %d, want 400", tag, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+
+	resp := doJSON(t, http.MethodPost, base+"/exec/bg", `{"command":["true"],"tag":""}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("empty tag status = %d, want 202", resp.StatusCode)
+	}
+	var start execBgResponse
+	decodeJSON(t, resp, &start)
+	if start.Tag != "" {
+		t.Errorf("empty tag response = %q, want omitted/empty", start.Tag)
+	}
+	doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "").Body.Close()
+
+	resp = doJSON(t, http.MethodPost, base+"/exec", `{"command":["true"],"tag":"sync"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("sync tag status = %d, want 400", resp.StatusCode)
+	}
+	resp.Body.Close()
+}
+
+func TestExec_BgTagRunningConflict(t *testing.T) {
+	s := newTestServer(t, false)
+	base := runHTTPServer(t, s)
+
+	resp := doJSON(t, http.MethodPost, base+"/exec/bg",
+		`{"command":["sleep","5"],"timeout_ms":10000,"tag":"dup"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("first status = %d, want 202", resp.StatusCode)
+	}
+	var start execBgResponse
+	decodeJSON(t, resp, &start)
+	t.Cleanup(func() {
+		doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "").Body.Close()
+	})
+
+	resp = doJSON(t, http.MethodPost, base+"/exec/bg",
+		`{"command":["true"],"tag":"dup"}`)
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("second status = %d, want 409", resp.StatusCode)
+	}
+	var env errorEnvelope
+	decodeJSON(t, resp, &env)
+	if env.Error.Code != CodeConflict {
+		t.Fatalf("error.code = %q, want %q", env.Error.Code, CodeConflict)
+	}
+	if env.Error.Details["tag"] != "dup" || env.Error.Details["existing_id"] != start.ExecID {
+		t.Fatalf("details = %#v, want tag dup and existing_id %s", env.Error.Details, start.ExecID)
+	}
+}
+
+func TestExec_BgTagConcurrentConflict(t *testing.T) {
+	s := newTestServer(t, false)
+	base := runHTTPServer(t, s)
+
+	type result struct {
+		status int
+		start  execBgResponse
+		env    errorEnvelope
+	}
+	startCh := make(chan struct{})
+	results := make(chan result, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-startCh
+			resp := doJSON(t, http.MethodPost, base+"/exec/bg",
+				`{"command":["sleep","5"],"timeout_ms":10000,"tag":"race"}`)
+			res := result{status: resp.StatusCode}
+			if resp.StatusCode == http.StatusAccepted {
+				decodeJSON(t, resp, &res.start)
+			} else {
+				decodeJSON(t, resp, &res.env)
+			}
+			results <- res
+		}()
+	}
+	close(startCh)
+	wg.Wait()
+	close(results)
+
+	var accepted, conflicts int
+	for res := range results {
+		switch res.status {
+		case http.StatusAccepted:
+			accepted++
+			t.Cleanup(func() {
+				doJSON(t, http.MethodDelete, base+"/exec/bg/"+res.start.ExecID, "").Body.Close()
+			})
+		case http.StatusConflict:
+			conflicts++
+			state, _ := res.env.Error.Details["state"].(string)
+			if state != "allocating" && state != execmgr.StateRunning {
+				t.Fatalf("conflict state = %q, want allocating or running", state)
+			}
+		default:
+			t.Fatalf("status = %d, want 202 or 409", res.status)
+		}
+	}
+	if accepted != 1 || conflicts != 1 {
+		t.Fatalf("accepted=%d conflicts=%d, want 1/1", accepted, conflicts)
+	}
+}
+
+func TestExec_BgListAndTagFilter(t *testing.T) {
+	s := newTestServer(t, false)
+	base := runHTTPServer(t, s)
+
+	tags := []string{"alpha", "beta", ""}
+	var ids []string
+	for _, tag := range tags {
+		body := `{"command":["sleep","5"],"timeout_ms":10000`
+		if tag != "" {
+			body += fmt.Sprintf(`,"tag":%q`, tag)
+		}
+		body += `}`
+		resp := doJSON(t, http.MethodPost, base+"/exec/bg", body)
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("start %q status = %d, want 202", tag, resp.StatusCode)
+		}
+		var start execBgResponse
+		decodeJSON(t, resp, &start)
+		ids = append(ids, start.ExecID)
+	}
+	t.Cleanup(func() {
+		for _, id := range ids {
+			doJSON(t, http.MethodDelete, base+"/exec/bg/"+id, "").Body.Close()
+		}
+	})
+
+	r := doJSON(t, http.MethodGet, base+"/exec/bg", "")
+	var list bgListResponse
+	decodeJSON(t, r, &list)
+	if len(list.Execs) != 3 {
+		t.Fatalf("list len = %d, want 3", len(list.Execs))
+	}
+
+	r = doJSON(t, http.MethodGet, base+"/exec/bg?tag=alpha", "")
+	decodeJSON(t, r, &list)
+	if len(list.Execs) != 1 || list.Execs[0].Tag != "alpha" {
+		t.Fatalf("filtered list = %#v, want one alpha", list.Execs)
+	}
+
+	r = doJSON(t, http.MethodGet, base+"/exec/bg?tag=bad/tag", "")
+	if r.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid tag filter status = %d, want 400", r.StatusCode)
+	}
+	r.Body.Close()
+}
+
+func TestExec_DeleteRemovesDirAndFreesTag(t *testing.T) {
+	s := newTestServer(t, false)
+	base := runHTTPServer(t, s)
+
+	resp := doJSON(t, http.MethodPost, base+"/exec/bg",
+		`{"command":["sleep","5"],"timeout_ms":10000,"tag":"free-me"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202", resp.StatusCode)
+	}
+	var start execBgResponse
+	decodeJSON(t, resp, &start)
+
+	del := doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "")
+	if del.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", del.StatusCode)
+	}
+	del.Body.Close()
+	if _, err := os.Stat(filepath.Join(s.cfg.StateDir, start.ExecID)); !os.IsNotExist(err) {
+		t.Fatalf("exec dir should be removed, stat err = %v", err)
+	}
+
+	resp = doJSON(t, http.MethodPost, base+"/exec/bg",
+		`{"command":["true"],"tag":"free-me"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("reuse tag status = %d, want 202", resp.StatusCode)
+	}
+	decodeJSON(t, resp, &start)
+	doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "").Body.Close()
+}
+
+func TestExec_DeleteDoesNotResurrectAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	tokenPath := filepath.Join(dir, "token")
+	if err := os.WriteFile(tokenPath, []byte(testToken), 0o400); err != nil {
+		t.Fatalf("write token: %v", err)
+	}
+	stateDir := filepath.Join(dir, "state")
+
+	newSrv := func() *Server {
+		cfg := &config.Config{
+			ListenAddr: ":0",
+			LogFormat:  "json",
+			TokenFile:  tokenPath,
+			StateDir:   stateDir,
+			MaxExecs:   4,
+		}
+		log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+		s, err := New(cfg, log, "test")
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		return s
+	}
+
+	s1 := newSrv()
+	ts1 := httptest.NewServer(s1.Handler())
+	resp := doJSON(t, http.MethodPost, ts1.URL+"/exec/bg",
+		`{"command":["sleep","5"],"timeout_ms":10000,"tag":"gone"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("start status = %d, want 202", resp.StatusCode)
+	}
+	var start execBgResponse
+	decodeJSON(t, resp, &start)
+	del := doJSON(t, http.MethodDelete, ts1.URL+"/exec/bg/"+start.ExecID, "")
+	if del.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete status = %d, want 204", del.StatusCode)
+	}
+	del.Body.Close()
+	ts1.Close()
+	_ = s1.Shutdown(context.Background())
+
+	s2 := newSrv()
+	ts2 := httptest.NewServer(s2.Handler())
+	t.Cleanup(ts2.Close)
+	r := doJSON(t, http.MethodGet, ts2.URL+"/exec/bg?tag=gone", "")
+	var list bgListResponse
+	decodeJSON(t, r, &list)
+	if len(list.Execs) != 0 {
+		t.Fatalf("deleted exec resurrected after restart: %#v", list.Execs)
+	}
+	resp = doJSON(t, http.MethodPost, ts2.URL+"/exec/bg",
+		`{"command":["true"],"tag":"gone"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("reuse after restart status = %d, want 202", resp.StatusCode)
+	}
+	decodeJSON(t, resp, &start)
+	doJSON(t, http.MethodDelete, ts2.URL+"/exec/bg/"+start.ExecID, "").Body.Close()
 }
 
 func TestExec_BgDeleteRunning(t *testing.T) {

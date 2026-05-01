@@ -2,6 +2,7 @@ package execmgr
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -266,6 +267,61 @@ func TestRecover_OrphanDoesNotHoldSlot(t *testing.T) {
 	}
 	<-e1.Done()
 	<-e2.Done()
+}
+
+func TestRecover_TagResurrectsWithRecord(t *testing.T) {
+	root := t.TempDir()
+	id := "01999999-5555-7000-8000-000000000006"
+	ec := 0
+	writeExecDir(t, root, id,
+		&Meta{ExecID: id, Tag: "kept", Command: []string{"true"}, StartedAt: time.Now().Add(-time.Minute)},
+		intPtr(1),
+		&Status{State: StateExited, ExitCode: &ec, FinishedAt: time.Now(), DurationMS: 10},
+	)
+
+	mgr := newRecoveryManager(t, root)
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if _, err := mgr.Start(context.Background(), StartRequest{Command: []string{"true"}, Tag: "kept"}); err == nil {
+		t.Fatal("Start with recovered tag succeeded, want conflict")
+	} else {
+		var tagErr *ErrTagConflict
+		if !errors.As(err, &tagErr) {
+			t.Fatalf("err = %v, want ErrTagConflict", err)
+		}
+		if tagErr.ExistingID != id || tagErr.State != StateExited {
+			t.Fatalf("tag conflict = %#v, want existing %s exited", tagErr, id)
+		}
+	}
+}
+
+func TestRecover_DuplicateTagsFirstLexicographicWins(t *testing.T) {
+	root := t.TempDir()
+	first := "01999999-5555-7000-8000-000000000007"
+	second := "01999999-5555-7000-8000-000000000008"
+	ec := 0
+	writeExecDir(t, root, first,
+		&Meta{ExecID: first, Tag: "dup", Command: []string{"true"}, StartedAt: time.Now().Add(-time.Minute)},
+		intPtr(1),
+		&Status{State: StateExited, ExitCode: &ec, FinishedAt: time.Now(), DurationMS: 10},
+	)
+	writeExecDir(t, root, second,
+		&Meta{ExecID: second, Tag: "dup", Command: []string{"true"}, StartedAt: time.Now().Add(-time.Minute)},
+		intPtr(1),
+		&Status{State: StateExited, ExitCode: &ec, FinishedAt: time.Now(), DurationMS: 10},
+	)
+
+	mgr := newRecoveryManager(t, root)
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if _, ok := mgr.Get(first); !ok {
+		t.Fatal("first duplicate should recover")
+	}
+	if _, ok := mgr.Get(second); ok {
+		t.Fatal("second duplicate should be skipped")
+	}
 }
 
 func intPtr(n int) *int { return &n }

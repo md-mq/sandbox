@@ -53,15 +53,24 @@ var allowedSignals = map[string]syscall.Signal{
 // execRequest is the wire shape for POST /exec, /exec/stream, /exec/bg.
 type execRequest struct {
 	Command   []string           `json:"command"`
+	Tag       string             `json:"tag"`
 	Env       map[string]*string `json:"env"` // null value = unset
 	Workdir   string             `json:"workdir"`
 	Stdin     string             `json:"stdin"` // base64
 	TimeoutMS int                `json:"timeout_ms"`
 }
 
-func (r *execRequest) toStartRequest() (execmgr.StartRequest, error) {
+func (r *execRequest) toStartRequest(allowTag bool) (execmgr.StartRequest, error) {
 	if len(r.Command) == 0 || r.Command[0] == "" {
 		return execmgr.StartRequest{}, fmt.Errorf("%w: command required", execmgr.ErrInvalidRequest)
+	}
+	if r.Tag != "" && !allowTag {
+		return execmgr.StartRequest{}, fmt.Errorf("%w: tag is only supported for background exec", execmgr.ErrInvalidRequest)
+	}
+	if allowTag {
+		if err := execmgr.ValidateTag(r.Tag); err != nil {
+			return execmgr.StartRequest{}, err
+		}
 	}
 	if len(r.Command) > maxCommandElements {
 		return execmgr.StartRequest{}, fmt.Errorf("%w: command has %d elements, max %d",
@@ -144,6 +153,7 @@ func (r *execRequest) toStartRequest() (execmgr.StartRequest, error) {
 	}
 	return execmgr.StartRequest{
 		Command:   r.Command,
+		Tag:       r.Tag,
 		Env:       r.Env,
 		Workdir:   r.Workdir,
 		Stdin:     stdin,
@@ -152,7 +162,7 @@ func (r *execRequest) toStartRequest() (execmgr.StartRequest, error) {
 }
 
 // decodeExecRequest writes an error response and returns ok=false on failure.
-func (s *Server) decodeExecRequest(w http.ResponseWriter, r *http.Request) (execmgr.StartRequest, bool) {
+func (s *Server) decodeExecRequest(w http.ResponseWriter, r *http.Request, allowTag bool) (execmgr.StartRequest, bool) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxExecBodyBytes)
 	var body execRequest
 	dec := json.NewDecoder(r.Body)
@@ -178,7 +188,7 @@ func (s *Server) decodeExecRequest(w http.ResponseWriter, r *http.Request) (exec
 		writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest, "body contains trailing data after JSON")
 		return execmgr.StartRequest{}, false
 	}
-	req, err := body.toStartRequest()
+	req, err := body.toStartRequest(allowTag)
 	if err != nil {
 		switch {
 		case errors.Is(err, execmgr.ErrReservedEnvKey):
@@ -197,7 +207,18 @@ func (s *Server) decodeExecRequest(w http.ResponseWriter, r *http.Request) (exec
 func (s *Server) startAndMap(ctx context.Context, w http.ResponseWriter, req execmgr.StartRequest) *execmgr.Exec {
 	e, err := s.mgr.Start(ctx, req)
 	if err != nil {
+		var tagErr *execmgr.ErrTagConflict
 		switch {
+		case errors.As(err, &tagErr):
+			details := map[string]any{
+				"tag":   tagErr.Tag,
+				"state": tagErr.State,
+			}
+			if tagErr.ExistingID != "" {
+				details["existing_id"] = tagErr.ExistingID
+			}
+			writeErrorWithDetails(w, s.log, http.StatusConflict, CodeConflict,
+				"tag already exists", details)
 		case errors.Is(err, execmgr.ErrCapExceeded):
 			w.Header().Set("Retry-After", "1")
 			// retry_after_ms duplicates Retry-After in the body for structured clients.
@@ -227,7 +248,7 @@ type execSyncResponse struct {
 }
 
 func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
-	req, ok := s.decodeExecRequest(w, r)
+	req, ok := s.decodeExecRequest(w, r, false)
 	if !ok {
 		return
 	}
@@ -267,7 +288,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleExecStream(w http.ResponseWriter, r *http.Request) {
-	req, ok := s.decodeExecRequest(w, r)
+	req, ok := s.decodeExecRequest(w, r, false)
 	if !ok {
 		return
 	}
@@ -377,10 +398,11 @@ type execBgResponse struct {
 	ExecID    string    `json:"exec_id"`
 	PID       int       `json:"pid"`
 	StartedAt time.Time `json:"started_at"`
+	Tag       string    `json:"tag,omitempty"`
 }
 
 func (s *Server) handleExecBg(w http.ResponseWriter, r *http.Request) {
-	req, ok := s.decodeExecRequest(w, r)
+	req, ok := s.decodeExecRequest(w, r, true)
 	if !ok {
 		return
 	}
@@ -393,7 +415,54 @@ func (s *Server) handleExecBg(w http.ResponseWriter, r *http.Request) {
 		ExecID:    e.ID,
 		PID:       e.PID,
 		StartedAt: e.StartedAt,
+		Tag:       e.Tag,
 	})
+}
+
+type bgListResponse struct {
+	Execs []bgListItem `json:"execs"`
+}
+
+type bgListItem struct {
+	ExecID      string     `json:"exec_id"`
+	PID         int        `json:"pid"`
+	State       string     `json:"state"`
+	StartedAt   time.Time  `json:"started_at"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
+	DurationMS  int64      `json:"duration_ms,omitempty"`
+	ExitCode    *int       `json:"exit_code,omitempty"`
+	Signal      string     `json:"signal,omitempty"`
+	StdoutBytes int64      `json:"stdout_bytes"`
+	StderrBytes int64      `json:"stderr_bytes"`
+	Tag         string     `json:"tag,omitempty"`
+}
+
+func (s *Server) handleExecBgList(w http.ResponseWriter, r *http.Request) {
+	tagFilter := r.URL.Query().Get("tag")
+	if tagFilter != "" {
+		if err := execmgr.ValidateTag(tagFilter); err != nil {
+			writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest, err.Error())
+			return
+		}
+	}
+	summaries := s.mgr.List(tagFilter)
+	resp := bgListResponse{Execs: make([]bgListItem, 0, len(summaries))}
+	for _, summary := range summaries {
+		resp.Execs = append(resp.Execs, bgListItem{
+			ExecID:      summary.ID,
+			PID:         summary.PID,
+			State:       summary.State,
+			StartedAt:   summary.StartedAt,
+			FinishedAt:  summary.FinishedAt,
+			DurationMS:  summary.DurationMS,
+			ExitCode:    summary.ExitCode,
+			Signal:      summary.Signal,
+			StdoutBytes: summary.StdoutBytes,
+			StderrBytes: summary.StderrBytes,
+			Tag:         summary.Tag,
+		})
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type bgStatusResponse struct {
@@ -407,6 +476,7 @@ type bgStatusResponse struct {
 	Signal      string     `json:"signal,omitempty"`
 	StdoutBytes int64      `json:"stdout_bytes"`
 	StderrBytes int64      `json:"stderr_bytes"`
+	Tag         string     `json:"tag,omitempty"`
 }
 
 func (s *Server) handleExecBgStatus(w http.ResponseWriter, r *http.Request) {
@@ -423,6 +493,7 @@ func (s *Server) handleExecBgStatus(w http.ResponseWriter, r *http.Request) {
 		StartedAt:   e.StartedAt,
 		StdoutBytes: fileSize(e.StdoutPath()),
 		StderrBytes: fileSize(e.StderrPath()),
+		Tag:         e.Tag,
 	}
 	if st := e.Status(); st != nil {
 		finished := st.FinishedAt
