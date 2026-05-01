@@ -9,12 +9,13 @@ import (
 // ErrorCode enumerates the stable error codes returned in JSON envelopes.
 // Keep in sync with memos/sandbox/plx-exec-api.md.
 const (
-	CodeInvalidRequest = "invalid_request"
-	CodeUnauthorized   = "unauthorized"
-	CodeNotFound       = "not_found"
-	CodeConflict       = "conflict"
-	CodeTimeout        = "timeout"
-	CodeInternal       = "internal"
+	CodeInvalidRequest  = "invalid_request"
+	CodeUnauthorized    = "unauthorized"
+	CodeNotFound        = "not_found"
+	CodeConflict        = "conflict"
+	CodeTimeout         = "timeout"
+	CodePayloadTooLarge = "payload_too_large"
+	CodeInternal        = "internal"
 )
 
 type errorEnvelope struct {

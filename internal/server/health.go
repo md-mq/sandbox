@@ -8,9 +8,10 @@ import (
 )
 
 // Counters is exposed to subsystems by pointer so they can increment the atomic
-// fields directly. execmgr owns ExecsRunning; PTYsAttached will be wired later.
+// fields directly. execmgr owns ExecsRunning; PTY counters will be wired later.
 type Counters struct {
 	ExecsRunning atomic.Int64
+	PTYsRunning  atomic.Int64
 	PTYsAttached atomic.Int64
 	lastActivity atomic.Int64 // unix nanoseconds
 }
@@ -33,6 +34,7 @@ type pingResponse struct {
 	UptimeMS     int64  `json:"uptime_ms"`
 	LastActivity string `json:"last_activity"`
 	ExecsRunning int64  `json:"execs_running"`
+	PTYsRunning  int64  `json:"ptys_running"`
 	PTYsAttached int64  `json:"ptys_attached"`
 }
 
@@ -47,6 +49,7 @@ func (s *Server) handlePing(w http.ResponseWriter, r *http.Request) {
 		UptimeMS:     time.Since(s.start).Milliseconds(),
 		LastActivity: last.Format(time.RFC3339Nano),
 		ExecsRunning: s.counters.ExecsRunning.Load(),
+		PTYsRunning:  s.counters.PTYsRunning.Load(),
 		PTYsAttached: s.counters.PTYsAttached.Load(),
 	}
 	w.Header().Set("Content-Type", "application/json")

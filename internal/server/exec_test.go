@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -145,6 +147,125 @@ func TestExec_StreamEmitsEvents(t *testing.T) {
 	}
 }
 
+func TestExec_StreamDisconnectDoesNotKillChild(t *testing.T) {
+	s := newTestServer(t, false)
+	base := runHTTPServer(t, s)
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "finished")
+
+	body := fmt.Sprintf(
+		`{"command":["sh","-c","printf started; sleep 0.3; : > finished"],"workdir":%q,"timeout_ms":5000}`,
+		dir,
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/exec/stream", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(headerSandboxToken, testToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	cancel()
+	resp.Body.Close()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(marker); err == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("marker file was not written; stream disconnect likely killed child")
+}
+
+func TestExec_BodyTooLarge(t *testing.T) {
+	s := newTestServer(t, false)
+	base := runHTTPServer(t, s)
+
+	body := `{"command":["true"],"stdin":"` + strings.Repeat("A", maxExecBodyBytes) + `"}`
+	resp := doJSON(t, http.MethodPost, base+"/exec", body)
+	if resp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", resp.StatusCode)
+	}
+	var env errorEnvelope
+	decodeJSON(t, resp, &env)
+	if env.Error.Code != CodePayloadTooLarge {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, CodePayloadTooLarge)
+	}
+}
+
+func TestExec_TrailingJSONRejected(t *testing.T) {
+	s := newTestServer(t, false)
+	base := runHTTPServer(t, s)
+
+	resp := doJSON(t, http.MethodPost, base+"/exec", `{"command":["true"]}{}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	var env errorEnvelope
+	decodeJSON(t, resp, &env)
+	if env.Error.Code != CodeInvalidRequest {
+		t.Errorf("error.code = %q, want %q", env.Error.Code, CodeInvalidRequest)
+	}
+}
+
+func TestExec_PerFieldCaps(t *testing.T) {
+	s := newTestServer(t, false)
+	base := runHTTPServer(t, s)
+
+	env := make([]string, 0, maxEnvKeys+1)
+	for i := 0; i < maxEnvKeys+1; i++ {
+		env = append(env, fmt.Sprintf("%q:%q", fmt.Sprintf("K%d", i), "v"))
+	}
+	args := make([]string, 0, maxCommandElements+1)
+	for i := 0; i < maxCommandElements+1; i++ {
+		args = append(args, `"x"`)
+	}
+
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "too many command elements",
+			body: `{"command":[` + strings.Join(args, ",") + `]}`,
+		},
+		{
+			name: "too many env keys",
+			body: `{"command":["true"],"env":{` + strings.Join(env, ",") + `}}`,
+		},
+		{
+			name: "oversized stdin decoded",
+			body: `{"command":["true"],"stdin":"` + base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("x"), maxStdinBytes+1)) + `"}`,
+		},
+		{
+			name: "invalid env key",
+			body: `{"command":["true"],"env":{"BAD=KEY":"v"}}`,
+		},
+		{
+			name: "command arg nul",
+			body: `{"command":["sh","-c","printf \u0000"]}`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := doJSON(t, http.MethodPost, base+"/exec", tc.body)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", resp.StatusCode)
+			}
+			resp.Body.Close()
+		})
+	}
+}
+
 func TestExec_BgLifecycle(t *testing.T) {
 	s := newTestServer(t, false)
 	base := runHTTPServer(t, s)
@@ -235,6 +356,12 @@ func TestExec_BgSignalInvalid(t *testing.T) {
 		t.Fatalf("status = %d, want 400", r.StatusCode)
 	}
 	r.Body.Close()
+
+	del := doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "")
+	if del.StatusCode != http.StatusNoContent {
+		t.Errorf("cleanup DELETE status = %d, want 204", del.StatusCode)
+	}
+	del.Body.Close()
 }
 
 func TestExec_CapExceeded(t *testing.T) {
@@ -449,4 +576,3 @@ func parseSSE(t *testing.T, resp *http.Response) []sseEvent {
 	}
 	return events
 }
-

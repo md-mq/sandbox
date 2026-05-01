@@ -71,6 +71,9 @@ func TestPing_NoAuthRequired(t *testing.T) {
 	if body.LastActivity == "" {
 		t.Errorf("LastActivity is empty")
 	}
+	if body.PTYsRunning != 0 {
+		t.Errorf("PTYsRunning = %d, want 0", body.PTYsRunning)
+	}
 }
 
 func TestAuth_MissingTokenReturns401(t *testing.T) {
@@ -98,6 +101,32 @@ func TestAuth_WrongTokenReturns401(t *testing.T) {
 		t.Fatalf("status = %d, want 401", rec.Code)
 	}
 	assertErrorCode(t, rec.Body.Bytes(), CodeUnauthorized)
+}
+
+func TestAuth_TouchOnlyAfterValidToken(t *testing.T) {
+	s := newTestServer(t, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/exec", nil)
+	req.Header.Set(headerSandboxToken, "wrong-token")
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong-token status = %d, want 401", rec.Code)
+	}
+	if !s.counters.LastActivity().IsZero() {
+		t.Fatal("wrong token should not update last activity")
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/nope", nil)
+	req.Header.Set(headerSandboxToken, testToken)
+	rec = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("valid-token status = %d, want 404", rec.Code)
+	}
+	if s.counters.LastActivity().IsZero() {
+		t.Fatal("valid authenticated request should update last activity")
+	}
 }
 
 func TestAuth_CorrectTokenFallsThroughTo404(t *testing.T) {

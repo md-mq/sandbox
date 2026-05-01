@@ -190,4 +190,82 @@ func TestRecover_AliveOrphanTransitionsOnDeath(t *testing.T) {
 	}
 }
 
+func TestRecover_SkipsPTYDirs(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "pty-01999999-3333-7000-8000-000000000004")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := WriteMeta(dir, &Meta{
+		ExecID:    "pty-01999999-3333-7000-8000-000000000004",
+		Command:   []string{"should-not-register"},
+		StartedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("WriteMeta: %v", err)
+	}
+
+	mgr := newRecoveryManager(t, root)
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if _, ok := mgr.Get("pty-01999999-3333-7000-8000-000000000004"); ok {
+		t.Fatal("pty-* dir should not register as an exec")
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("pty-* dir should be left alone, stat err = %v", err)
+	}
+}
+
+func TestRecover_OrphanDoesNotHoldSlot(t *testing.T) {
+	root := t.TempDir()
+	id := "01999999-4444-7000-8000-000000000005"
+	dir := filepath.Join(root, id)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	cmd := exec.Command("sh", "-c", "sleep 5")
+	cmd.SysProcAttr = setpgid()
+	if err := cmd.Start(); err != nil {
+		t.Skipf("sh unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	go func() { _ = cmd.Wait() }()
+
+	if err := WriteMeta(dir, &Meta{ExecID: id, Command: []string{"sh"}, StartedAt: time.Now()}); err != nil {
+		t.Fatalf("WriteMeta: %v", err)
+	}
+	if err := WritePid(dir, cmd.Process.Pid); err != nil {
+		t.Fatalf("WritePid: %v", err)
+	}
+
+	counter := &atomic.Int64{}
+	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
+	mgr, err := NewManager(root, 2, counter, log)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	t.Cleanup(func() { mgr.Shutdown(context.Background()) })
+	if err := mgr.Recover(context.Background()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if counter.Load() != 0 {
+		t.Fatalf("counter after orphan recovery = %d, want 0", counter.Load())
+	}
+
+	e1, err := mgr.Start(context.Background(), StartRequest{Command: []string{"sleep", "1"}, TimeoutMS: 5000})
+	if err != nil {
+		t.Fatalf("Start #1: %v", err)
+	}
+	e2, err := mgr.Start(context.Background(), StartRequest{Command: []string{"sleep", "1"}, TimeoutMS: 5000})
+	if err != nil {
+		t.Fatalf("Start #2: %v", err)
+	}
+	if counter.Load() != 2 {
+		t.Fatalf("counter after two new starts = %d, want 2", counter.Load())
+	}
+	<-e1.Done()
+	<-e2.Done()
+}
+
 func intPtr(n int) *int { return &n }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -28,6 +29,15 @@ const (
 	followDeadline   = 30 * time.Second
 	sseMaxPerPoll    = 1 << 20
 	ssePollInterval  = 100 * time.Millisecond
+
+	maxExecBodyBytes     = 16 << 20
+	maxCommandTotalBytes = 4096
+	maxCommandElements   = 256
+	maxEnvKeys           = 256
+	maxEnvKeyBytes       = 256
+	maxEnvValueBytes     = 4096
+	maxWorkdirBytes      = 4096
+	maxStdinBytes        = 8 << 20
 )
 
 var allowedSignals = map[string]syscall.Signal{
@@ -53,12 +63,58 @@ func (r *execRequest) toStartRequest() (execmgr.StartRequest, error) {
 	if len(r.Command) == 0 || r.Command[0] == "" {
 		return execmgr.StartRequest{}, fmt.Errorf("%w: command required", execmgr.ErrInvalidRequest)
 	}
-	for k := range r.Env {
+	if len(r.Command) > maxCommandElements {
+		return execmgr.StartRequest{}, fmt.Errorf("%w: command has %d elements, max %d",
+			execmgr.ErrInvalidRequest, len(r.Command), maxCommandElements)
+	}
+	total := 0
+	for i, arg := range r.Command {
+		if strings.ContainsRune(arg, 0) {
+			return execmgr.StartRequest{}, fmt.Errorf("%w: command[%d] contains NUL", execmgr.ErrInvalidRequest, i)
+		}
+		total += len(arg)
+	}
+	if total > maxCommandTotalBytes {
+		return execmgr.StartRequest{}, fmt.Errorf("%w: command total length %d bytes, max %d",
+			execmgr.ErrInvalidRequest, total, maxCommandTotalBytes)
+	}
+	if len(r.Env) > maxEnvKeys {
+		return execmgr.StartRequest{}, fmt.Errorf("%w: env has %d keys, max %d",
+			execmgr.ErrInvalidRequest, len(r.Env), maxEnvKeys)
+	}
+	for k, v := range r.Env {
+		if k == "" {
+			return execmgr.StartRequest{}, fmt.Errorf("%w: empty env key", execmgr.ErrInvalidRequest)
+		}
+		if len(k) > maxEnvKeyBytes {
+			return execmgr.StartRequest{}, fmt.Errorf("%w: env key exceeds %d bytes",
+				execmgr.ErrInvalidRequest, maxEnvKeyBytes)
+		}
+		if strings.ContainsAny(k, "=\x00") {
+			return execmgr.StartRequest{}, fmt.Errorf("%w: env key contains '=' or NUL", execmgr.ErrInvalidRequest)
+		}
 		if strings.HasPrefix(k, "POLYAXON_") {
 			return execmgr.StartRequest{}, fmt.Errorf("%w: %s", execmgr.ErrReservedEnvKey, k)
 		}
+		if v != nil {
+			if len(*v) > maxEnvValueBytes {
+				return execmgr.StartRequest{}, fmt.Errorf("%w: env[%s] value exceeds %d bytes",
+					execmgr.ErrInvalidRequest, k, maxEnvValueBytes)
+			}
+			if strings.ContainsRune(*v, 0) {
+				return execmgr.StartRequest{}, fmt.Errorf("%w: env[%s] value contains NUL",
+					execmgr.ErrInvalidRequest, k)
+			}
+		}
 	}
 	if r.Workdir != "" {
+		if len(r.Workdir) > maxWorkdirBytes {
+			return execmgr.StartRequest{}, fmt.Errorf("%w: workdir exceeds %d bytes",
+				execmgr.ErrInvalidRequest, maxWorkdirBytes)
+		}
+		if strings.ContainsRune(r.Workdir, 0) {
+			return execmgr.StartRequest{}, fmt.Errorf("%w: workdir contains NUL", execmgr.ErrInvalidRequest)
+		}
 		if !filepath.IsAbs(r.Workdir) {
 			return execmgr.StartRequest{}, fmt.Errorf("%w: workdir must be absolute", execmgr.ErrInvalidRequest)
 		}
@@ -72,6 +128,10 @@ func (r *execRequest) toStartRequest() (execmgr.StartRequest, error) {
 		decoded, err := base64.StdEncoding.DecodeString(r.Stdin)
 		if err != nil {
 			return execmgr.StartRequest{}, fmt.Errorf("%w: stdin must be valid base64", execmgr.ErrInvalidRequest)
+		}
+		if len(decoded) > maxStdinBytes {
+			return execmgr.StartRequest{}, fmt.Errorf("%w: stdin decodes to %d bytes, max %d",
+				execmgr.ErrInvalidRequest, len(decoded), maxStdinBytes)
 		}
 		stdin = decoded
 	}
@@ -93,11 +153,29 @@ func (r *execRequest) toStartRequest() (execmgr.StartRequest, error) {
 
 // decodeExecRequest writes an error response and returns ok=false on failure.
 func (s *Server) decodeExecRequest(w http.ResponseWriter, r *http.Request) (execmgr.StartRequest, bool) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxExecBodyBytes)
 	var body execRequest
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, s.log, http.StatusRequestEntityTooLarge, CodePayloadTooLarge,
+				fmt.Sprintf("request body exceeds %d bytes", maxExecBodyBytes))
+			return execmgr.StartRequest{}, false
+		}
 		writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest, "malformed JSON body")
+		return execmgr.StartRequest{}, false
+	}
+	var extra struct{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, s.log, http.StatusRequestEntityTooLarge, CodePayloadTooLarge,
+				fmt.Sprintf("request body exceeds %d bytes", maxExecBodyBytes))
+			return execmgr.StartRequest{}, false
+		}
+		writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest, "body contains trailing data after JSON")
 		return execmgr.StartRequest{}, false
 	}
 	req, err := body.toStartRequest()
@@ -153,7 +231,7 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	e := s.startAndMap(r.Context(), w, req)
+	e := s.startAndMap(context.Background(), w, req)
 	if e == nil {
 		return
 	}
@@ -161,9 +239,8 @@ func (s *Server) handleExec(w http.ResponseWriter, r *http.Request) {
 	select {
 	case <-e.Done():
 	case <-r.Context().Done():
-		// Belt-and-braces: exec.CommandContext already sends SIGKILL on cancel,
-		// but Exec.Kill does SIGTERM → 5s → SIGKILL which is friendlier to the
-		// user's process (gives it a chance to flush on their own terms).
+		// Client disconnected. The child uses context.Background(), so this is
+		// the single cleanup path.
 		_ = e.Kill()
 		return
 	}
@@ -202,7 +279,7 @@ func (s *Server) handleExecStream(w http.ResponseWriter, r *http.Request) {
 
 	// Start before flipping into SSE mode so 429/invalid can still be a JSON
 	// error envelope. After headers are flushed we can't switch back.
-	e := s.startAndMap(r.Context(), w, req)
+	e := s.startAndMap(context.Background(), w, req)
 	if e == nil {
 		return
 	}

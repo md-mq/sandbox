@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -21,7 +22,7 @@ func (m *Manager) Recover(ctx context.Context) error {
 		return fmt.Errorf("read state dir: %w", err)
 	}
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir() || strings.HasPrefix(entry.Name(), "pty-") {
 			continue
 		}
 		if err := m.recoverOne(ctx, entry.Name()); err != nil {
@@ -77,18 +78,9 @@ func (m *Manager) recoverOne(ctx context.Context, id string) error {
 			e := m.shellExec(id, dir, meta)
 			e.pgid = pgid
 			e.setState(StateRunning)
-			// Orphans don't count against MaxExecs: tryReserve is best-effort,
-			// and if the cap is already full we still register + poll the
-			// orphan but never hold a slot. That means a restart with N
-			// orphans followed by N new launches can briefly exceed the cap;
-			// the alternative (blocking new launches until orphans drain) is
-			// more surprising than the transient over-capacity.
-			if m.tryReserve() {
-				go func() {
-					<-e.Done()
-					m.release()
-				}()
-			}
+			// Orphans never hold a cap slot. New launches can briefly push the
+			// process total above MaxExecs, but blocking fresh work on recovered
+			// processes we can no longer wait(2) on is worse.
 			// We can't wait(2) on a child we don't own.
 			go m.orphanReaper(ctx, e, pgid)
 			m.mu.Lock()
@@ -161,11 +153,12 @@ func (m *Manager) orphanReaper(ctx context.Context, e *Exec, pgid int) {
 	}
 }
 
-// isAlive returns true if any process in the group exists. kill(pgid, 0) sends
+// isAlive returns true if any process in the group exists. kill(-pgid, 0) sends
 // no signal but returns ESRCH when the target is gone.
 func isAlive(pgid int) bool {
 	if pgid <= 0 {
 		return false
 	}
-	return syscall.Kill(pgid, 0) == nil
+	err := syscall.Kill(-pgid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }

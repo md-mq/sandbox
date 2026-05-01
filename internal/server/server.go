@@ -76,7 +76,7 @@ func (s *Server) buildRouter() *chi.Mux {
 	// 404 when no token is presented.
 	r.Group(func(r chi.Router) {
 		if s.auth != nil {
-			r.Use(authMiddleware(s.auth, s.log))
+			r.Use(authMiddleware(s.auth, s.log, s.counters))
 		} else {
 			r.Use(func(next http.Handler) http.Handler {
 				return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
