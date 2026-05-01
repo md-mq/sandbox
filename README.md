@@ -12,9 +12,9 @@ Polyaxon streams proxy. Design lives in the top-level memos:
 
 ## Status
 
-Exec endpoints live: `/ping`, `/exec`, `/exec/stream`, `/exec/bg`
-(+ status, logs, signal, delete) with file-backed output and crash recovery.
-PTY and filesystem endpoints land in later phases — see `memos/sandbox/roadmap.md`.
+Exec endpoints live. `/ping`, `/exec`, `/exec/stream`, `/exec/bg`
+(+ status, logs, signal, delete) all implemented with file-backed output and
+crash recovery. PTY and filesystem endpoints land in later phases.
 
 ## Build
 
@@ -60,3 +60,18 @@ internal/
 ```
 
 `internal/` prevents external imports — this binary is a leaf product.
+
+## Threat model
+
+plx-exec is **not a tenancy boundary**. It is a daemon that runs inside the user's container and serves the same principal who already owns the pod. What it does and does not protect:
+
+**What it protects:**
+- Co-tenant pods on the same cluster (they don't have this pod's token)
+- Tokens extracted from one pod being reused against another (each token is HMAC-derived from a single `run_uuid`)
+
+**What it does NOT protect, by design:**
+- User code inside this container calling `localhost:9090`. The token is mounted into the same filesystem the user's own code reads; the user CAN read it and authenticate. That's fine — user code can already do anything it wants inside its own container via normal process-level means. plx-exec is a convenience daemon, not a sandbox-within-a-sandbox.
+- `POLYAXON_*` env-key rejection on `/exec*` is audit hygiene (prevents accidental clobbering of platform-injected env), not a security boundary.
+- No workdir jailing, no PATH / `LD_PRELOAD` filtering, no syscall sandbox.
+
+Authn/authz for end users happens upstream at the Polyaxon streams proxy. plx-exec trusts that layer to have checked RBAC before forwarding.
