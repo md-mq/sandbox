@@ -48,6 +48,12 @@ Override config via env vars (all prefixed `POLYAXON_SANDBOX_`):
 | `POLYAXON_SANDBOX_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown deadline |
 | `POLYAXON_SANDBOX_PING_ONLY` | unset | Skip token requirement (dev only) |
 | `POLYAXON_SANDBOX_MAX_EXECS` | `64` | Concurrent running exec cap; 65th returns 429 |
+| `POLYAXON_SANDBOX_MAX_PTYS` | `16` | Concurrent running PTY session cap |
+| `POLYAXON_SANDBOX_PTY_IDLE_TTL` | `30m` | Detached running PTY TTL before kill + removal |
+| `POLYAXON_SANDBOX_PTY_TERMINAL_TTL` | `10m` | Exited PTY metadata retention window |
+| `POLYAXON_SANDBOX_PTY_HEARTBEAT_INTERVAL` | `30s` | WebSocket ping interval for PTY attachments |
+| `POLYAXON_SANDBOX_PTY_PONG_TIMEOUT` | `60s` | WebSocket pong timeout before detach |
+| `POLYAXON_SANDBOX_PTY_REPLAY_BYTES` | `262144` | Per-session replay ring size; `0` disables replay; hard max 4 MiB |
 
 ## Layout
 
