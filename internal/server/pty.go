@@ -9,10 +9,13 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/gorilla/websocket"
 
 	"github.com/polyaxon/sandbox/internal/ptymgr"
 )
@@ -20,7 +23,12 @@ import (
 const (
 	maxPTYBodyBytes = 1 << 20
 	maxPTYDimension = 1000
+	wsWriteTimeout  = 10 * time.Second
 )
+
+var ptyWSUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
 
 type ptyCreateRequest struct {
 	Command []string           `json:"command"`
@@ -200,6 +208,44 @@ func (s *Server) handlePTYStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ptyStatusFromStatus(session.Status()))
 }
 
+func (s *Server) handlePTYAttach(w http.ResponseWriter, r *http.Request) {
+	session, ok := s.ptyMgr.Get(chi.URLParam(r, "id"))
+	if !ok {
+		writeError(w, s.log, http.StatusNotFound, CodeNotFound, "pty not found")
+		return
+	}
+	replayBytes, ok := s.parseReplayBytes(w, r)
+	if !ok {
+		return
+	}
+
+	reservation, err := session.TryReserveAttach()
+	if err != nil {
+		switch {
+		case errors.Is(err, ptymgr.ErrAlreadyAttached):
+			writeError(w, s.log, http.StatusConflict, CodeAlreadyAttached, "pty already attached")
+		case errors.Is(err, ptymgr.ErrGone):
+			writePTYGoneWithStatus(w, s.log, session.Status())
+		default:
+			writeError(w, s.log, http.StatusInternalServerError, CodeInternal, err.Error())
+		}
+		return
+	}
+	defer reservation.Release()
+
+	conn, err := ptyWSUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		return
+	}
+
+	attachment, err := reservation.Finalize(replayBytes)
+	if err != nil {
+		s.writeAttachUpgradeError(conn, err)
+		return
+	}
+	s.runPTYWebsocket(conn, session, attachment)
+}
+
 type ptyResizeRequest struct {
 	Cols *int `json:"cols"`
 	Rows *int `json:"rows"`
@@ -292,6 +338,150 @@ func (s *Server) handlePTYDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) parseReplayBytes(w http.ResponseWriter, r *http.Request) (int, bool) {
+	raw := r.URL.Query().Get("replay_bytes")
+	if raw == "" {
+		return 0, true
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 {
+		writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest, "replay_bytes must be >= 0")
+		return 0, false
+	}
+	if n > s.cfg.PTYReplayBytes {
+		writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest, "replay_bytes exceeds ring size")
+		return 0, false
+	}
+	return n, true
+}
+
+func (s *Server) runPTYWebsocket(conn *websocket.Conn, session *ptymgr.PTYSession, attachment *ptymgr.Attachment) {
+	defer conn.Close()
+	defer attachment.Release()
+
+	heartbeat := s.cfg.PTYHeartbeat
+	if heartbeat <= 0 {
+		heartbeat = 30 * time.Second
+	}
+	pongTimeout := s.cfg.PTYPongTimeout
+	if pongTimeout <= 0 {
+		pongTimeout = 60 * time.Second
+	}
+
+	conn.SetReadLimit(maxPTYBodyBytes)
+	_ = conn.SetReadDeadline(time.Now().Add(pongTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(pongTimeout))
+	})
+
+	done := make(chan struct{})
+	var closeOnce sync.Once
+	closeConn := func() {
+		closeOnce.Do(func() {
+			attachment.Release()
+			_ = conn.Close()
+		})
+	}
+	go s.ptyWSWriter(conn, attachment, heartbeat, done, closeConn)
+
+	for {
+		mt, data, err := conn.ReadMessage()
+		if err != nil {
+			closeConn()
+			<-done
+			return
+		}
+		switch mt {
+		case websocket.BinaryMessage:
+			if err := session.Write(data); err != nil {
+				attachment.SendText(wsErrorFrame(err.Error()))
+			}
+		case websocket.TextMessage:
+			if err := s.handlePTYWSControl(session, data); err != nil {
+				attachment.SendText(wsErrorFrame(err.Error()))
+			}
+		case websocket.CloseMessage:
+			closeConn()
+			<-done
+			return
+		}
+	}
+}
+
+func (s *Server) ptyWSWriter(conn *websocket.Conn, attachment *ptymgr.Attachment, heartbeat time.Duration, done chan<- struct{}, closeConn func()) {
+	defer close(done)
+	ticker := time.NewTicker(heartbeat)
+	defer ticker.Stop()
+	frames := attachment.Frames()
+
+	for {
+		select {
+		case frame, ok := <-frames:
+			if !ok {
+				_ = conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+				_ = conn.WriteMessage(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "pty detached"))
+				closeConn()
+				return
+			}
+			messageType := websocket.BinaryMessage
+			if frame.Kind == ptymgr.FrameText {
+				messageType = websocket.TextMessage
+			}
+			if err := conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
+				closeConn()
+				return
+			}
+			if err := conn.WriteMessage(messageType, frame.Data); err != nil {
+				closeConn()
+				return
+			}
+		case <-ticker.C:
+			if err := conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
+				closeConn()
+				return
+			}
+			if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteTimeout)); err != nil {
+				closeConn()
+				return
+			}
+		}
+	}
+}
+
+type ptyWSControl struct {
+	Type   string `json:"type"`
+	Cols   *int   `json:"cols"`
+	Rows   *int   `json:"rows"`
+	Signal string `json:"signal"`
+}
+
+func (s *Server) handlePTYWSControl(session *ptymgr.PTYSession, data []byte) error {
+	var msg ptyWSControl
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return fmt.Errorf("malformed control message")
+	}
+	switch msg.Type {
+	case "resize":
+		cols, err := requiredPTYDimension(msg.Cols, "cols")
+		if err != nil {
+			return err
+		}
+		rows, err := requiredPTYDimension(msg.Rows, "rows")
+		if err != nil {
+			return err
+		}
+		return session.Resize(cols, rows)
+	case "signal":
+		if !validPTYSignal(msg.Signal) {
+			return fmt.Errorf("signal must be one of SIGINT/SIGTERM/SIGKILL/SIGHUP/SIGQUIT/SIGUSR1/SIGUSR2")
+		}
+		return session.Signal(msg.Signal)
+	default:
+		return fmt.Errorf("control type must be resize or signal")
+	}
 }
 
 func (s *Server) decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) bool {
@@ -406,4 +596,56 @@ func writePTYValidationError(w http.ResponseWriter, log *slog.Logger, err error)
 
 func writePTYGone(w http.ResponseWriter, log *slog.Logger) {
 	writeError(w, log, http.StatusGone, CodeGone, "pty exited")
+}
+
+func writePTYGoneWithStatus(w http.ResponseWriter, log *slog.Logger, st ptymgr.PTYSessionStatus) {
+	details := map[string]any{
+		"pty_id":      st.PTYID,
+		"state":       st.State,
+		"exit_code":   st.ExitCode,
+		"signal":      nullIfEmpty(st.Signal),
+		"duration_ms": st.DurationMS,
+	}
+	if st.FinishedAt != nil {
+		details["finished_at"] = st.FinishedAt
+	}
+	writeErrorWithDetails(w, log, http.StatusGone, CodeGone, "pty exited", details)
+}
+
+func (s *Server) writeAttachUpgradeError(conn *websocket.Conn, err error) {
+	defer conn.Close()
+	_ = conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+	code := CodeInternal
+	switch {
+	case errors.Is(err, ptymgr.ErrReplayTooLarge), errors.Is(err, ptymgr.ErrInvalidRequest):
+		code = CodeInvalidRequest
+	case errors.Is(err, ptymgr.ErrGone):
+		code = CodeGone
+	case errors.Is(err, ptymgr.ErrAlreadyAttached):
+		code = CodeAlreadyAttached
+	}
+	_ = conn.WriteMessage(websocket.TextMessage, wsErrorFrameWithCode(code, err.Error()))
+	_ = conn.WriteMessage(websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error()))
+}
+
+func wsErrorFrame(message string) []byte {
+	return wsErrorFrameWithCode(CodeInvalidRequest, message)
+}
+
+func wsErrorFrameWithCode(code, message string) []byte {
+	body := struct {
+		Type    string `json:"type"`
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}{
+		Type:    "error",
+		Code:    code,
+		Message: message,
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return []byte(`{"type":"error","code":"internal","message":"error"}`)
+	}
+	return data
 }

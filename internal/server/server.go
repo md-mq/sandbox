@@ -114,6 +114,7 @@ func (s *Server) buildRouter() *chi.Mux {
 		if s.ptyMgr != nil {
 			r.Post("/pty", s.handlePTYCreate)
 			r.Get("/pty", s.handlePTYList)
+			r.Get("/pty/{id}/ws", s.handlePTYAttach)
 			r.Get("/pty/{id}", s.handlePTYStatus)
 			r.Delete("/pty/{id}", s.handlePTYDelete)
 			r.Post("/pty/{id}/resize", s.handlePTYResize)

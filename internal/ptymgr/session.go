@@ -88,6 +88,7 @@ type PTYSession struct {
 	ring *RingBuffer
 
 	runningCounter *atomic.Int64
+	attachCounter  *atomic.Int64
 	log            *slog.Logger
 
 	sessionMu sync.RWMutex
@@ -108,6 +109,7 @@ type PTYSession struct {
 	lastClientActivity time.Time
 	detachedSince      *time.Time
 	attached           bool
+	attaching          bool
 
 	deleting    bool
 	deleteCause finishCause
@@ -122,7 +124,7 @@ type PTYSession struct {
 	outputDone chan struct{}
 }
 
-func newSession(id, stateDir string, req AllocateRequest, cfg SessionConfig, runningCounter *atomic.Int64, log *slog.Logger) (*PTYSession, error) {
+func newSession(id, stateDir string, req AllocateRequest, cfg SessionConfig, runningCounter, attachCounter *atomic.Int64, log *slog.Logger) (*PTYSession, error) {
 	if id == "" {
 		return nil, fmt.Errorf("%w: pty id required", ErrInvalidRequest)
 	}
@@ -196,6 +198,7 @@ func newSession(id, stateDir string, req AllocateRequest, cfg SessionConfig, run
 		inCh:               make(chan []byte, inputQueueSize),
 		ring:               NewRing(cfg.ReplayBytes),
 		runningCounter:     runningCounter,
+		attachCounter:      attachCounter,
 		log:                log.With("pty_id", id),
 		command:            command,
 		env:                cloneEnv(env),
@@ -291,34 +294,7 @@ func (s *PTYSession) Wait() { <-s.done }
 func (s *PTYSession) Status() PTYSessionStatus {
 	s.sessionMu.RLock()
 	defer s.sessionMu.RUnlock()
-
-	st := PTYSessionStatus{
-		PTYID:              s.ID,
-		Tag:                s.Tag,
-		PID:                s.PID,
-		State:              s.state,
-		StartedAt:          s.StartedAt,
-		Signal:             s.signal,
-		DurationMS:         s.durationMS,
-		Cols:               s.cols,
-		Rows:               s.rows,
-		LastActivity:       s.lastActivity,
-		LastClientActivity: s.lastClientActivity,
-		Attached:           s.attached,
-	}
-	if s.finishedAt != nil {
-		finished := *s.finishedAt
-		st.FinishedAt = &finished
-	}
-	if s.exitCode != nil {
-		ec := *s.exitCode
-		st.ExitCode = &ec
-	}
-	if s.detachedSince != nil {
-		detached := *s.detachedSince
-		st.DetachedSince = &detached
-	}
-	return st
+	return s.statusLocked()
 }
 
 func (s *PTYSession) Replay(n int) ([][]byte, error) {
@@ -359,18 +335,25 @@ func (s *PTYSession) outputPump() {
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
 			now := time.Now().UTC()
+			var evicted *Subscriber
+			decAttach := false
 			s.sessionMu.Lock()
 			if s.ring != nil {
 				s.ring.Append(chunk)
 			}
 			if s.sub != nil {
-				if !s.sub.TryPush(outFrame{kind: frameBinary, data: chunk}) {
-					s.sub.Close()
-					s.sub = nil
+				if !s.sub.TryPush(Frame{Kind: FrameBinary, Data: chunk}) {
+					evicted, decAttach = s.evictSubscriberLocked(s.sub, now)
 				}
 			}
 			s.lastActivity = now
 			s.sessionMu.Unlock()
+			if evicted != nil {
+				evicted.Close()
+			}
+			if decAttach && s.attachCounter != nil {
+				s.attachCounter.Add(-1)
+			}
 		}
 		if err != nil {
 			if !isPTYClosedRead(err) {
@@ -442,14 +425,22 @@ func (s *PTYSession) finish(cause finishCause, meta exitMetadata) {
 		}
 		sub = s.sub
 		s.sub = nil
+		wasAttached := s.attached
+		s.attached = false
+		s.attaching = false
+		detached := meta.finishedAt
+		s.detachedSince = &detached
 		shouldRemove = causeRemoves(cause) || s.deleting
 		s.sessionMu.Unlock()
 
 		if sub != nil {
 			if cause == CauseChildExited {
-				sub.TryPush(outFrame{kind: frameText, data: exitFrame(meta)})
+				sub.TryPush(Frame{Kind: FrameText, Data: exitFrame(meta)})
 			}
 			sub.Close()
+		}
+		if wasAttached && s.attachCounter != nil {
+			s.attachCounter.Add(-1)
 		}
 		if s.runningCounter != nil {
 			s.runningCounter.Add(-1)

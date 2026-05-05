@@ -18,11 +18,18 @@ var nextPTYTestID atomic.Uint64
 
 func newTestSession(t *testing.T, req AllocateRequest, replayBytes int) (*PTYSession, *atomic.Int64) {
 	t.Helper()
+	s, counter, _ := newTestSessionWithCounters(t, req, replayBytes)
+	return s, counter
+}
+
+func newTestSessionWithCounters(t *testing.T, req AllocateRequest, replayBytes int) (*PTYSession, *atomic.Int64, *atomic.Int64) {
+	t.Helper()
 	counter := &atomic.Int64{}
+	attachCounter := &atomic.Int64{}
 	counter.Add(1)
 	log := slog.New(slog.NewJSONHandler(io.Discard, nil))
 	id := fmt.Sprintf("test-%d", nextPTYTestID.Add(1))
-	s, err := newSession(id, t.TempDir(), req, SessionConfig{ReplayBytes: replayBytes}, counter, log)
+	s, err := newSession(id, t.TempDir(), req, SessionConfig{ReplayBytes: replayBytes}, counter, attachCounter, log)
 	if err != nil {
 		counter.Add(-1)
 		t.Fatalf("newSession: %v", err)
@@ -30,8 +37,9 @@ func newTestSession(t *testing.T, req AllocateRequest, replayBytes int) (*PTYSes
 	t.Cleanup(func() {
 		_ = s.Kill()
 		waitForPTYCounter(t, counter, 0)
+		waitForPTYCounter(t, attachCounter, 0)
 	})
-	return s, counter
+	return s, counter, attachCounter
 }
 
 func TestSession_DefaultCommandStartsShell(t *testing.T) {
@@ -191,6 +199,57 @@ func TestSession_ConcurrentChildExitAndDeleteRemoves(t *testing.T) {
 	}
 }
 
+func TestSession_SlowSubscriberEvictionDetaches(t *testing.T) {
+	dir := t.TempDir()
+	s, _, attachCounter := newTestSessionWithCounters(t, AllocateRequest{
+		Command: []string{"sh", "-c", "while [ ! -f go ]; do sleep 0.01; done; printf evict; sleep 30"},
+		Workdir: dir,
+	}, 4096)
+
+	reservation, err := s.TryReserveAttach()
+	if err != nil {
+		t.Fatalf("TryReserveAttach: %v", err)
+	}
+	attachment, err := reservation.Finalize(0)
+	if err != nil {
+		t.Fatalf("Finalize: %v", err)
+	}
+	if attachment.Frames() == nil {
+		t.Fatal("attachment frames is nil")
+	}
+	waitForPTYCounter(t, attachCounter, 1)
+	if st := s.Status(); !st.Attached || st.DetachedSince != nil {
+		t.Fatalf("attached status = attached:%t detached_since:%v, want attached", st.Attached, st.DetachedSince)
+	}
+
+	filled := 0
+	for attachment.sub.TryPush(Frame{Kind: FrameText, Data: []byte("hold")}) {
+		filled++
+	}
+	if filled == 0 {
+		t.Fatal("subscriber queue did not fill")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "go"), []byte("1"), 0o600); err != nil {
+		t.Fatalf("write go marker: %v", err)
+	}
+	waitForDetached(t, s, attachCounter, 3*time.Second)
+
+	attachment.Release()
+	waitForPTYCounter(t, attachCounter, 0)
+
+	reservation, err = s.TryReserveAttach()
+	if err != nil {
+		t.Fatalf("TryReserveAttach after eviction: %v", err)
+	}
+	attachment, err = reservation.Finalize(0)
+	if err != nil {
+		t.Fatalf("Finalize after eviction: %v", err)
+	}
+	attachment.Release()
+	waitForPTYCounter(t, attachCounter, 0)
+}
+
 func waitForReplay(t *testing.T, s *PTYSession, needle string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -241,6 +300,21 @@ func waitForPTYCounter(t *testing.T, c *atomic.Int64, want int64) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("counter = %d, want %d", c.Load(), want)
+}
+
+func waitForDetached(t *testing.T, s *PTYSession, attachCounter *atomic.Int64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		st := s.Status()
+		if !st.Attached && st.DetachedSince != nil && attachCounter.Load() == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	st := s.Status()
+	t.Fatalf("status = attached:%t detached_since:%v attach_counter:%d, want detached",
+		st.Attached, st.DetachedSince, attachCounter.Load())
 }
 
 func strPtr(v string) *string { return &v }

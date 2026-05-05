@@ -135,7 +135,7 @@ func (m *Manager) Allocate(req AllocateRequest) (*PTYSession, error) {
 	}
 
 	id := uuid.Must(uuid.NewV7()).String()
-	s, err := newSession(id, m.stateDir, req, SessionConfig{ReplayBytes: m.cfg.ReplayBytes}, m.runningCounter, m.log)
+	s, err := newSession(id, m.stateDir, req, SessionConfig{ReplayBytes: m.cfg.ReplayBytes}, m.runningCounter, m.attachCounter, m.log)
 	if err != nil {
 		m.release()
 		releaseTag()

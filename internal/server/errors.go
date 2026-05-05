@@ -13,6 +13,7 @@ const (
 	CodeUnauthorized    = "unauthorized"
 	CodeNotFound        = "not_found"
 	CodeConflict        = "conflict"
+	CodeAlreadyAttached = "already_attached"
 	CodeGone            = "gone"
 	CodeTimeout         = "timeout"
 	CodePayloadTooLarge = "payload_too_large"
