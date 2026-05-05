@@ -120,6 +120,12 @@ func (s *Server) buildRouter() *chi.Mux {
 			r.Post("/pty/{id}/resize", s.handlePTYResize)
 			r.Post("/pty/{id}/signal", s.handlePTYSignal)
 		}
+		r.Get("/fs/read", s.handleFSRead)
+		r.Post("/fs/write", s.handleFSWrite)
+		r.Get("/fs/ls", s.handleFSList)
+		r.Post("/fs/mkdir", s.handleFSMkdir)
+		r.Delete("/fs/rm", s.handleFSRemove)
+		r.Get("/fs/stat", s.handleFSStat)
 
 		r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			writeError(w, s.log, http.StatusNotFound, CodeNotFound, "route not found")

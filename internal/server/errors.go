@@ -12,6 +12,7 @@ const (
 	CodeInvalidRequest  = "invalid_request"
 	CodeUnauthorized    = "unauthorized"
 	CodeNotFound        = "not_found"
+	CodeForbidden       = "forbidden"
 	CodeConflict        = "conflict"
 	CodeAlreadyAttached = "already_attached"
 	CodeGone            = "gone"
