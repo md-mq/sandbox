@@ -10,12 +10,6 @@ Polyaxon streams proxy. Design lives in the top-level memos:
 - `memos/sandbox/authentication-decisions.md` — why we auth this way
 - `memos/sandbox/roadmap.md` — phased rollout, current status
 
-## Status
-
-Exec endpoints live. `/ping`, `/exec`, `/exec/stream`, `/exec/bg`
-(+ status, logs, signal, delete) all implemented with file-backed output and
-crash recovery. PTY and filesystem endpoints land in later phases.
-
 ## Build
 
 ```

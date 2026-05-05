@@ -192,7 +192,7 @@ func (s *Server) decodeExecRequest(w http.ResponseWriter, r *http.Request, allow
 	if err != nil {
 		switch {
 		case errors.Is(err, execmgr.ErrReservedEnvKey):
-			writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest, err.Error())
+			writeError(w, s.log, http.StatusBadRequest, CodeReservedEnvKey, err.Error())
 		case errors.Is(err, execmgr.ErrInvalidRequest):
 			writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 		default:

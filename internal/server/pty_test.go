@@ -249,13 +249,14 @@ func TestPTY_ValidationFailures(t *testing.T) {
 
 	longBody := `{"` + strings.Repeat("x", maxPTYBodyBytes+1) + `":true}`
 	tests := []struct {
-		name string
-		body string
-		want int
+		name     string
+		body     string
+		want     int
+		wantCode string
 	}{
 		{name: "bad tag", body: `{"tag":"bad/tag"}`, want: http.StatusBadRequest},
 		{name: "bad workdir", body: `{"workdir":"relative"}`, want: http.StatusBadRequest},
-		{name: "reserved env", body: `{"env":{"POLYAXON_FOO":"bar"}}`, want: http.StatusBadRequest},
+		{name: "reserved env", body: `{"env":{"POLYAXON_FOO":"bar"}}`, want: http.StatusBadRequest, wantCode: CodeReservedEnvKey},
 		{name: "cols zero", body: `{"cols":0}`, want: http.StatusBadRequest},
 		{name: "rows too large", body: `{"rows":1001}`, want: http.StatusBadRequest},
 		{name: "trailing json", body: `{} {}`, want: http.StatusBadRequest},
@@ -266,6 +267,14 @@ func TestPTY_ValidationFailures(t *testing.T) {
 			resp := doJSON(t, http.MethodPost, base+"/pty", tt.body)
 			if resp.StatusCode != tt.want {
 				t.Fatalf("status = %d, want %d", resp.StatusCode, tt.want)
+			}
+			if tt.wantCode != "" {
+				var env errorEnvelope
+				decodeJSON(t, resp, &env)
+				if env.Error.Code != tt.wantCode {
+					t.Fatalf("code = %q, want %q", env.Error.Code, tt.wantCode)
+				}
+				return
 			}
 			resp.Body.Close()
 		})

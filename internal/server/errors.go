@@ -17,6 +17,7 @@ const (
 	CodeGone            = "gone"
 	CodeTimeout         = "timeout"
 	CodePayloadTooLarge = "payload_too_large"
+	CodeReservedEnvKey  = "reserved_env_key"
 	CodeInternal        = "internal"
 )
 

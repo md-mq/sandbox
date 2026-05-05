@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -221,6 +223,130 @@ func TestPTYWS_InvalidReplay(t *testing.T) {
 	}
 }
 
+func TestPTYWS_PingAttachedCounter(t *testing.T) {
+	s := newTestServer(t, false)
+	base := runHTTPServer(t, s)
+	created := createPTY(t, base, `{"command":["sleep","30"]}`)
+	t.Cleanup(func() {
+		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+	})
+
+	conn, resp, err := dialPTYWS(base, created.PTYID, "")
+	if err != nil {
+		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
+	}
+	readWSText(t, conn, 3*time.Second)
+
+	ping := getPing(t, base)
+	if ping.PTYsAttached != 1 {
+		t.Fatalf("ptys_attached = %d, want 1", ping.PTYsAttached)
+	}
+
+	if err := conn.Close(); err != nil {
+		t.Fatalf("close ws: %v", err)
+	}
+	waitPTYDetached(t, base, created.PTYID)
+	ping = getPing(t, base)
+	if ping.PTYsAttached != 0 {
+		t.Fatalf("ptys_attached after detach = %d, want 0", ping.PTYsAttached)
+	}
+}
+
+func TestPTYWS_FramesTouchLastActivity(t *testing.T) {
+	s := newTestServer(t, false)
+	base := runHTTPServer(t, s)
+	created := createPTY(t, base, `{"command":["/bin/sh"]}`)
+	t.Cleanup(func() {
+		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+	})
+
+	conn, resp, err := dialPTYWS(base, created.PTYID, "")
+	if err != nil {
+		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
+	}
+	defer conn.Close()
+	readWSText(t, conn, 3*time.Second)
+
+	before := s.counters.LastActivity()
+	time.Sleep(2 * time.Millisecond)
+	if err := conn.WriteMessage(websocket.BinaryMessage, []byte(":\n")); err != nil {
+		t.Fatalf("write stdin: %v", err)
+	}
+	waitServerActivityAfter(t, s, before)
+
+	session, ok := s.ptyMgr.Get(created.PTYID)
+	if !ok {
+		t.Fatalf("pty %s missing", created.PTYID)
+	}
+	before = s.counters.LastActivity()
+	time.Sleep(2 * time.Millisecond)
+	if err := session.Write([]byte("printf sent-touch\\n\n")); err != nil {
+		t.Fatalf("session write: %v", err)
+	}
+	readWSBinaryContains(t, conn, "sent-touch", 3*time.Second)
+	waitServerActivityAfter(t, s, before)
+}
+
+func TestPTYWS_HeartbeatTimeoutDetaches(t *testing.T) {
+	s := newTestServer(t, false)
+	s.cfg.PTYHeartbeat = 20 * time.Millisecond
+	s.cfg.PTYPongTimeout = 80 * time.Millisecond
+	base := runHTTPServer(t, s)
+	created := createPTY(t, base, `{"command":["sleep","30"]}`)
+	t.Cleanup(func() {
+		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+	})
+
+	conn, resp, err := dialPTYWS(base, created.PTYID, "")
+	if err != nil {
+		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
+	}
+	defer conn.Close()
+	readWSText(t, conn, 3*time.Second)
+
+	waitPTYDetached(t, base, created.PTYID)
+	if st := getPTYStatus(t, base, created.PTYID); st.State != ptymgr.StateRunning {
+		t.Fatalf("state after heartbeat detach = %q, want running", st.State)
+	}
+}
+
+func TestPTYWS_OversizeFrameDetachesSessionSurvives(t *testing.T) {
+	s := newTestServer(t, false)
+	base := runHTTPServer(t, s)
+	created := createPTY(t, base, `{"command":["sleep","30"]}`)
+	t.Cleanup(func() {
+		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+	})
+
+	conn, resp, err := dialPTYWS(base, created.PTYID, "")
+	if err != nil {
+		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
+	}
+	readWSText(t, conn, 3*time.Second)
+
+	if err := conn.WriteMessage(websocket.BinaryMessage, bytes.Repeat([]byte("x"), maxPTYBodyBytes+1)); err != nil {
+		t.Fatalf("write oversize frame: %v", err)
+	}
+	_, _, err = readWSMessage(t, conn, 3*time.Second)
+	if err == nil {
+		t.Fatal("read after oversize succeeded, want close/error")
+	}
+	var closeErr *websocket.CloseError
+	if errors.As(err, &closeErr) && closeErr.Code != websocket.CloseMessageTooBig {
+		t.Fatalf("close code = %d, want %d", closeErr.Code, websocket.CloseMessageTooBig)
+	}
+	waitPTYDetached(t, base, created.PTYID)
+	if st := getPTYStatus(t, base, created.PTYID); st.State != ptymgr.StateRunning {
+		t.Fatalf("state after oversize detach = %q, want running", st.State)
+	}
+
+	conn, resp, err = dialPTYWS(base, created.PTYID, "")
+	if err != nil {
+		t.Fatalf("reattach after oversize: %v status=%v", err, responseStatus(resp))
+	}
+	conn.Close()
+}
+
 func dialPTYWS(base, id, rawQuery string) (*websocket.Conn, *http.Response, error) {
 	u, err := url.Parse(base)
 	if err != nil {
@@ -321,6 +447,29 @@ func waitPTYReplayReady(t *testing.T, s *Server, id string, n int) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("pty %s replay did not reach %d bytes", id, n)
+}
+
+func waitServerActivityAfter(t *testing.T, s *Server, before time.Time) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.counters.LastActivity().After(before) {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("last_activity = %s, want after %s", s.counters.LastActivity(), before)
+}
+
+func getPing(t *testing.T, base string) pingResponse {
+	t.Helper()
+	resp := doJSON(t, http.MethodGet, base+"/ping", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("ping status = %d, want 200", resp.StatusCode)
+	}
+	var ping pingResponse
+	decodeJSON(t, resp, &ping)
+	return ping
 }
 
 func responseStatus(resp *http.Response) any {

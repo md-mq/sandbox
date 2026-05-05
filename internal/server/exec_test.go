@@ -92,8 +92,8 @@ func TestExec_RejectsPolyaxonPrefixedEnv(t *testing.T) {
 	}
 	var env errorEnvelope
 	decodeJSON(t, resp, &env)
-	if env.Error.Code != CodeInvalidRequest {
-		t.Errorf("code = %q, want invalid_request", env.Error.Code)
+	if env.Error.Code != CodeReservedEnvKey {
+		t.Errorf("code = %q, want reserved_env_key", env.Error.Code)
 	}
 }
 

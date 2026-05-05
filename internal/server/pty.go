@@ -373,6 +373,7 @@ func (s *Server) runPTYWebsocket(conn *websocket.Conn, session *ptymgr.PTYSessio
 	conn.SetReadLimit(maxPTYBodyBytes)
 	_ = conn.SetReadDeadline(time.Now().Add(pongTimeout))
 	conn.SetPongHandler(func(string) error {
+		s.touchActivity()
 		return conn.SetReadDeadline(time.Now().Add(pongTimeout))
 	})
 
@@ -393,6 +394,7 @@ func (s *Server) runPTYWebsocket(conn *websocket.Conn, session *ptymgr.PTYSessio
 			<-done
 			return
 		}
+		s.touchActivity()
 		switch mt {
 		case websocket.BinaryMessage:
 			if err := session.Write(data); err != nil {
@@ -421,8 +423,10 @@ func (s *Server) ptyWSWriter(conn *websocket.Conn, attachment *ptymgr.Attachment
 		case frame, ok := <-frames:
 			if !ok {
 				_ = conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
-				_ = conn.WriteMessage(websocket.CloseMessage,
-					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "pty detached"))
+				if err := conn.WriteMessage(websocket.CloseMessage,
+					websocket.FormatCloseMessage(websocket.CloseNormalClosure, "pty detached")); err == nil {
+					s.touchActivity()
+				}
 				closeConn()
 				return
 			}
@@ -438,6 +442,7 @@ func (s *Server) ptyWSWriter(conn *websocket.Conn, attachment *ptymgr.Attachment
 				closeConn()
 				return
 			}
+			s.touchActivity()
 		case <-ticker.C:
 			if err := conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout)); err != nil {
 				closeConn()
@@ -447,6 +452,7 @@ func (s *Server) ptyWSWriter(conn *websocket.Conn, attachment *ptymgr.Attachment
 				closeConn()
 				return
 			}
+			s.touchActivity()
 		}
 	}
 }
@@ -586,7 +592,7 @@ func validPTYSignal(sig string) bool {
 func writePTYValidationError(w http.ResponseWriter, log *slog.Logger, err error) {
 	switch {
 	case errors.Is(err, ptymgr.ErrReservedEnvKey):
-		writeError(w, log, http.StatusBadRequest, CodeInvalidRequest, err.Error())
+		writeError(w, log, http.StatusBadRequest, CodeReservedEnvKey, err.Error())
 	case errors.Is(err, ptymgr.ErrInvalidRequest):
 		writeError(w, log, http.StatusBadRequest, CodeInvalidRequest, err.Error())
 	default:
@@ -627,6 +633,12 @@ func (s *Server) writeAttachUpgradeError(conn *websocket.Conn, err error) {
 	_ = conn.WriteMessage(websocket.TextMessage, wsErrorFrameWithCode(code, err.Error()))
 	_ = conn.WriteMessage(websocket.CloseMessage,
 		websocket.FormatCloseMessage(websocket.CloseInternalServerErr, err.Error()))
+}
+
+func (s *Server) touchActivity() {
+	if s.counters != nil {
+		s.counters.Touch(time.Now())
+	}
 }
 
 func wsErrorFrame(message string) []byte {
