@@ -13,6 +13,7 @@ import (
 	"github.com/polyaxon/sandbox/internal/auth"
 	"github.com/polyaxon/sandbox/internal/config"
 	"github.com/polyaxon/sandbox/internal/execmgr"
+	"github.com/polyaxon/sandbox/internal/ptymgr"
 )
 
 type Server struct {
@@ -25,6 +26,7 @@ type Server struct {
 	version  string
 	counters *Counters
 	mgr      *execmgr.Manager
+	ptyMgr   *ptymgr.Manager
 }
 
 // New loads the auth token and builds the exec manager. In PingOnly mode both
@@ -53,6 +55,19 @@ func New(cfg *config.Config, log *slog.Logger, version string) (*Server, error) 
 			return nil, fmt.Errorf("recover execs: %w", err)
 		}
 		s.mgr = mgr
+
+		ptyMgr, err := ptymgr.NewManager(cfg.StateDir, ptymgr.ManagerConfig{
+			IdleTTL:     cfg.PTYIdleTTL,
+			TerminalTTL: cfg.PTYTerminalTTL,
+			ReplayBytes: cfg.PTYReplayBytes,
+		}, cfg.MaxPTYs, &s.counters.PTYsRunning, &s.counters.PTYsAttached, log)
+		if err != nil {
+			return nil, fmt.Errorf("build pty manager: %w", err)
+		}
+		if err := ptyMgr.Cleanup(); err != nil {
+			return nil, fmt.Errorf("cleanup ptys: %w", err)
+		}
+		s.ptyMgr = ptyMgr
 	}
 
 	s.router = s.buildRouter()
@@ -96,6 +111,14 @@ func (s *Server) buildRouter() *chi.Mux {
 			r.Post("/exec/bg/{id}/signal", s.handleExecBgSignal)
 			r.Delete("/exec/bg/{id}", s.handleExecBgDelete)
 		}
+		if s.ptyMgr != nil {
+			r.Post("/pty", s.handlePTYCreate)
+			r.Get("/pty", s.handlePTYList)
+			r.Get("/pty/{id}", s.handlePTYStatus)
+			r.Delete("/pty/{id}", s.handlePTYDelete)
+			r.Post("/pty/{id}/resize", s.handlePTYResize)
+			r.Post("/pty/{id}/signal", s.handlePTYSignal)
+		}
 
 		r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			writeError(w, s.log, http.StatusNotFound, CodeNotFound, "route not found")
@@ -122,6 +145,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.log.Info("plx-exec shutting down")
 	if s.mgr != nil {
 		s.mgr.Shutdown(ctx)
+	}
+	if s.ptyMgr != nil {
+		s.ptyMgr.Shutdown(ctx)
 	}
 	return s.http.Shutdown(ctx)
 }

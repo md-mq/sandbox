@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/polyaxon/sandbox/internal/config"
 )
@@ -18,10 +20,14 @@ func newTestServer(t *testing.T, pingOnly bool) *Server {
 	t.Helper()
 
 	cfg := &config.Config{
-		ListenAddr: ":0",
-		LogFormat:  "json",
-		PingOnly:   pingOnly,
-		MaxExecs:   4,
+		ListenAddr:     ":0",
+		LogFormat:      "json",
+		PingOnly:       pingOnly,
+		MaxExecs:       4,
+		MaxPTYs:        4,
+		PTYIdleTTL:     time.Hour,
+		PTYTerminalTTL: time.Hour,
+		PTYReplayBytes: 4096,
 	}
 	if !pingOnly {
 		dir := t.TempDir()
@@ -38,6 +44,11 @@ func newTestServer(t *testing.T, pingOnly bool) *Server {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = s.Shutdown(ctx)
+	})
 	return s
 }
 

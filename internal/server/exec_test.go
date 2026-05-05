@@ -540,11 +540,15 @@ func TestExec_DeleteDoesNotResurrectAfterRestart(t *testing.T) {
 
 	newSrv := func() *Server {
 		cfg := &config.Config{
-			ListenAddr: ":0",
-			LogFormat:  "json",
-			TokenFile:  tokenPath,
-			StateDir:   stateDir,
-			MaxExecs:   4,
+			ListenAddr:     ":0",
+			LogFormat:      "json",
+			TokenFile:      tokenPath,
+			StateDir:       stateDir,
+			MaxExecs:       4,
+			MaxPTYs:        4,
+			PTYIdleTTL:     time.Hour,
+			PTYTerminalTTL: time.Hour,
+			PTYReplayBytes: 4096,
 		}
 		log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 		s, err := New(cfg, log, "test")
@@ -722,11 +726,15 @@ func TestExec_RestartRecovery(t *testing.T) {
 
 	newSrv := func() *Server {
 		cfg := &config.Config{
-			ListenAddr: ":0",
-			LogFormat:  "json",
-			TokenFile:  tokenPath,
-			StateDir:   stateDir,
-			MaxExecs:   4,
+			ListenAddr:     ":0",
+			LogFormat:      "json",
+			TokenFile:      tokenPath,
+			StateDir:       stateDir,
+			MaxExecs:       4,
+			MaxPTYs:        4,
+			PTYIdleTTL:     time.Hour,
+			PTYTerminalTTL: time.Hour,
+			PTYReplayBytes: 4096,
 		}
 		log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
 		s, err := New(cfg, log, "test")
