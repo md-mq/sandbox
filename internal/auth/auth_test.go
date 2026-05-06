@@ -33,6 +33,54 @@ func TestLoadFromFile_Empty(t *testing.T) {
 	}
 }
 
+func TestNew(t *testing.T) {
+	a, err := New(" my-secret-token\n")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if !a.Check("my-secret-token") {
+		t.Error("expected direct token to match after whitespace trim")
+	}
+}
+
+func TestNew_Empty(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		token string
+	}{
+		{"empty", ""},
+		{"whitespace", "   \n\t "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := New(tc.token)
+			if err == nil {
+				t.Fatal("expected error for empty token")
+			}
+		})
+	}
+}
+
+func TestLoad_DirectTokenWins(t *testing.T) {
+	a, err := Load("direct-token", "/nope/does-not-exist")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !a.Check("direct-token") {
+		t.Error("expected direct token to match")
+	}
+}
+
+func TestLoad_FileFallback(t *testing.T) {
+	path := writeToken(t, "file-token")
+	a, err := Load("", path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !a.Check("file-token") {
+		t.Error("expected file token to match")
+	}
+}
+
 func TestCheck(t *testing.T) {
 	path := writeToken(t, "abcd1234")
 	a, err := LoadFromFile(path)

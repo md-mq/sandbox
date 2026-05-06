@@ -41,7 +41,7 @@ func New(cfg *config.Config, log *slog.Logger, version string) (*Server, error) 
 	}
 
 	if !cfg.PingOnly {
-		a, err := auth.LoadFromFile(cfg.TokenFile)
+		a, err := auth.Load(cfg.Token, cfg.TokenFile)
 		if err != nil {
 			return nil, err
 		}

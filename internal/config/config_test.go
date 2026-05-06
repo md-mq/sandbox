@@ -18,6 +18,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if cfg.ListenAddr != defaultListenAddr {
 		t.Errorf("ListenAddr = %q, want %q", cfg.ListenAddr, defaultListenAddr)
 	}
+	if cfg.Token != "" {
+		t.Errorf("Token = %q, want empty", cfg.Token)
+	}
 	if cfg.TokenFile != defaultTokenFile {
 		t.Errorf("TokenFile = %q, want %q", cfg.TokenFile, defaultTokenFile)
 	}
@@ -61,6 +64,7 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	tokenFile := writeTempToken(t, "secret")
 
 	t.Setenv(envListenAddr, ":8080")
+	t.Setenv(envToken, "env-secret")
 	t.Setenv(envTokenFile, tokenFile)
 	t.Setenv(envStateDir, "/var/lib/plx")
 	t.Setenv(envLogFormat, "text")
@@ -79,6 +83,9 @@ func TestLoad_EnvOverrides(t *testing.T) {
 	}
 	if cfg.ListenAddr != ":8080" {
 		t.Errorf("ListenAddr = %q", cfg.ListenAddr)
+	}
+	if cfg.Token != "env-secret" {
+		t.Errorf("Token = %q", cfg.Token)
 	}
 	if cfg.TokenFile != tokenFile {
 		t.Errorf("TokenFile = %q", cfg.TokenFile)
@@ -122,6 +129,23 @@ func TestLoad_MissingTokenFileErrors(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected error for missing token file, got nil")
+	}
+}
+
+func TestLoad_TokenEnvSkipsTokenFileStat(t *testing.T) {
+	clearEnv(t)
+	t.Setenv(envToken, "env-secret")
+	t.Setenv(envTokenFile, "/does/not/exist/sandbox-token")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Token != "env-secret" {
+		t.Errorf("Token = %q, want env-secret", cfg.Token)
+	}
+	if cfg.TokenFile != "/does/not/exist/sandbox-token" {
+		t.Errorf("TokenFile = %q", cfg.TokenFile)
 	}
 }
 
@@ -237,7 +261,7 @@ func writeTempToken(t *testing.T, content string) string {
 func clearEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		envListenAddr, envTokenFile, envStateDir,
+		envListenAddr, envToken, envTokenFile, envStateDir,
 		envLogFormat, envShutdownTimeout, envPingOnly, envMaxExecs,
 		envMaxPTYs, envPTYIdleTTL, envPTYTerminalTTL,
 		envPTYHeartbeat, envPTYPongTimeout, envPTYReplayBytes,

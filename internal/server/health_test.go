@@ -155,6 +155,41 @@ func TestAuth_CorrectTokenFallsThroughTo404(t *testing.T) {
 	}
 }
 
+func TestAuth_DirectTokenFallsThroughTo404(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		ListenAddr:     ":0",
+		Token:          testToken,
+		TokenFile:      filepath.Join(dir, "missing-token"),
+		StateDir:       filepath.Join(dir, "state"),
+		LogFormat:      "json",
+		MaxExecs:       4,
+		MaxPTYs:        4,
+		PTYIdleTTL:     time.Hour,
+		PTYTerminalTTL: time.Hour,
+		PTYReplayBytes: 4096,
+	}
+	log := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+	s, err := New(cfg, log, "test")
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		_ = s.Shutdown(ctx)
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/nope", nil)
+	req.Header.Set(headerSandboxToken, testToken)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 (auth should have passed)", rec.Code)
+	}
+}
+
 func TestPingOnly_RejectsRoutes_UsesPath(t *testing.T) {
 	// sanity: keep the existing PingOnly coverage on a non-real path too
 	s := newTestServer(t, true)

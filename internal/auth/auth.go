@@ -6,12 +6,30 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 )
 
 // Authenticator compares incoming X-POLYAXON-SANDBOX-TOKEN headers
 // against a pre-loaded secret in constant time.
 type Authenticator struct {
 	expected []byte
+}
+
+// New trims and loads a direct token value. The token must be non-empty.
+func New(token string) (*Authenticator, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, errors.New("token is empty")
+	}
+	return &Authenticator{expected: []byte(token)}, nil
+}
+
+// Load uses a direct token when provided, otherwise falls back to a token file.
+func Load(token, tokenFile string) (*Authenticator, error) {
+	if token != "" {
+		return New(token)
+	}
+	return LoadFromFile(tokenFile)
 }
 
 // LoadFromFile reads a token file from disk, trims trailing whitespace,

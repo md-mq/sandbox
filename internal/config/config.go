@@ -9,6 +9,7 @@ import (
 
 const (
 	envListenAddr      = "POLYAXON_SANDBOX_LISTEN_ADDR"
+	envToken           = "POLYAXON_SANDBOX_TOKEN"
 	envTokenFile       = "POLYAXON_SANDBOX_TOKEN_FILE"
 	envStateDir        = "POLYAXON_SANDBOX_STATE_DIR"
 	envLogFormat       = "POLYAXON_SANDBOX_LOG_FORMAT"
@@ -40,6 +41,7 @@ const (
 
 type Config struct {
 	ListenAddr      string
+	Token           string
 	TokenFile       string
 	StateDir        string
 	LogFormat       string
@@ -57,6 +59,7 @@ type Config struct {
 func Load() (*Config, error) {
 	cfg := &Config{
 		ListenAddr:      envOr(envListenAddr, defaultListenAddr),
+		Token:           os.Getenv(envToken),
 		TokenFile:       envOr(envTokenFile, defaultTokenFile),
 		StateDir:        envOr(envStateDir, defaultStateDir),
 		LogFormat:       envOr(envLogFormat, defaultLogFormat),
@@ -114,7 +117,7 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("%s: must be 'json' or 'text', got %q", envLogFormat, cfg.LogFormat)
 	}
 
-	if !cfg.PingOnly {
+	if !cfg.PingOnly && cfg.Token == "" {
 		if _, err := os.Stat(cfg.TokenFile); err != nil {
 			return nil, fmt.Errorf("%s %q: %w", envTokenFile, cfg.TokenFile, err)
 		}
