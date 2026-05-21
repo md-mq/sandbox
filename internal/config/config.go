@@ -22,11 +22,13 @@ const (
 	envPTYHeartbeat    = "POLYAXON_SANDBOX_PTY_HEARTBEAT_INTERVAL"
 	envPTYPongTimeout  = "POLYAXON_SANDBOX_PTY_PONG_TIMEOUT"
 	envPTYReplayBytes  = "POLYAXON_SANDBOX_PTY_REPLAY_BYTES"
+	envSSHTarget       = "POLYAXON_SANDBOX_SSH_TARGET"
 
 	defaultListenAddr      = ":9090"
 	defaultTokenFile       = "/opt/polyaxon/sandbox-token"
 	defaultStateDir        = "/tmp/plx-exec"
 	defaultLogFormat       = "json"
+	defaultSSHTarget       = "127.0.0.1:22"
 	defaultShutdownTimeout = 10 * time.Second
 	defaultMaxExecs        = 64
 	defaultMaxPTYs         = 16
@@ -54,6 +56,7 @@ type Config struct {
 	PTYHeartbeat    time.Duration
 	PTYPongTimeout  time.Duration
 	PTYReplayBytes  int
+	SSHTarget       string
 }
 
 func Load() (*Config, error) {
@@ -72,6 +75,7 @@ func Load() (*Config, error) {
 		PTYHeartbeat:    defaultPTYHeartbeat,
 		PTYPongTimeout:  defaultPTYPongTimeout,
 		PTYReplayBytes:  defaultPTYReplayBytes,
+		SSHTarget:       envOr(envSSHTarget, defaultSSHTarget),
 	}
 
 	if err := parseDuration(envShutdownTimeout, &cfg.ShutdownTimeout); err != nil {

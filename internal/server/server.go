@@ -126,6 +126,7 @@ func (s *Server) buildRouter() *chi.Mux {
 		r.Post("/fs/mkdir", s.handleFSMkdir)
 		r.Delete("/fs/rm", s.handleFSRemove)
 		r.Get("/fs/stat", s.handleFSStat)
+		r.Get("/ssh/tunnel", s.handleSSHTunnel)
 
 		r.Handle("/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			writeError(w, s.log, http.StatusNotFound, CodeNotFound, "route not found")
