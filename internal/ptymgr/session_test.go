@@ -69,7 +69,7 @@ func TestSession_TERMDefaultAndOverride(t *testing.T) {
 				Env:     tt.env,
 				Workdir: dir,
 			}, 0)
-			waitForFile(t, filepath.Join(dir, "term.txt"), tt.want, 3*time.Second)
+			waitForFile(t, filepath.Join(dir, "term.txt"), tt.want)
 			_ = s.Kill()
 		})
 	}
@@ -101,7 +101,7 @@ func TestSession_NaturalExitRetainsStatus(t *testing.T) {
 		Command: []string{"sh", "-c", "exit 7"},
 	}, 1024)
 
-	waitDone(t, s.Done(), 3*time.Second)
+	waitDone(t, s.Done())
 	waitForPTYCounter(t, counter, 0)
 
 	st := s.Status()
@@ -141,12 +141,12 @@ func TestSession_SignalINTUsesTerminalInterrupt(t *testing.T) {
 		Workdir: dir,
 	}, 1024)
 
-	waitForFile(t, filepath.Join(dir, "ready.txt"), "ready", 3*time.Second)
+	waitForFile(t, filepath.Join(dir, "ready.txt"), "ready")
 	if err := s.Signal("SIGINT"); err != nil {
 		t.Fatalf("Signal(SIGINT): %v", err)
 	}
-	waitForFile(t, filepath.Join(dir, "int.txt"), "int", 3*time.Second)
-	waitDone(t, s.Done(), 3*time.Second)
+	waitForFile(t, filepath.Join(dir, "int.txt"), "int")
+	waitDone(t, s.Done())
 }
 
 func TestSession_SignalTERMUsesProcessGroup(t *testing.T) {
@@ -156,12 +156,12 @@ func TestSession_SignalTERMUsesProcessGroup(t *testing.T) {
 		Workdir: dir,
 	}, 1024)
 
-	waitForFile(t, filepath.Join(dir, "ready.txt"), "ready", 3*time.Second)
+	waitForFile(t, filepath.Join(dir, "ready.txt"), "ready")
 	if err := s.Signal("SIGTERM"); err != nil {
 		t.Fatalf("Signal(SIGTERM): %v", err)
 	}
-	waitForFile(t, filepath.Join(dir, "term.txt"), "term", 3*time.Second)
-	waitDone(t, s.Done(), 3*time.Second)
+	waitForFile(t, filepath.Join(dir, "term.txt"), "term")
+	waitDone(t, s.Done())
 }
 
 func TestSession_InvalidSignalRejected(t *testing.T) {
@@ -267,9 +267,9 @@ func waitForReplay(t *testing.T, s *PTYSession, needle string, timeout time.Dura
 	t.Fatalf("replay did not contain %q before timeout; got %q", needle, string(bytes.Join(parts, nil)))
 }
 
-func waitForFile(t *testing.T, path, want string, timeout time.Duration) {
+func waitForFile(t *testing.T, path, want string) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		raw, err := os.ReadFile(path)
 		if err == nil && string(raw) == want {
@@ -281,12 +281,12 @@ func waitForFile(t *testing.T, path, want string, timeout time.Duration) {
 	t.Fatalf("%s = %q, want %q before timeout", path, string(raw), want)
 }
 
-func waitDone(t *testing.T, done <-chan struct{}, timeout time.Duration) {
+func waitDone(t *testing.T, done <-chan struct{}) {
 	t.Helper()
 	select {
 	case <-done:
-	case <-time.After(timeout):
-		t.Fatalf("session did not finish within %s", timeout)
+	case <-time.After(3 * time.Second):
+		t.Fatalf("session did not finish within %s", 3*time.Second)
 	}
 }
 

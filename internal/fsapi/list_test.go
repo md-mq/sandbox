@@ -29,13 +29,13 @@ func TestListNonRecursive(t *testing.T) {
 	}
 
 	byName := entriesByName(res.Entries)
-	if byName["file.txt"].Type != "file" {
+	if byName["file.txt"].Type != entryTypeFile {
 		t.Fatalf("file type = %q, want file", byName["file.txt"].Type)
 	}
-	if byName["sub"].Type != "dir" {
+	if byName["sub"].Type != entryTypeDir {
 		t.Fatalf("sub type = %q, want dir", byName["sub"].Type)
 	}
-	if byName["link"].Type != "symlink" || byName["link"].SymlinkTarget != "file.txt" {
+	if byName["link"].Type != entryTypeSymlink || byName["link"].SymlinkTarget != "file.txt" {
 		t.Fatalf("link entry = %+v, want symlink to file.txt", byName["link"])
 	}
 }

@@ -24,7 +24,7 @@ func TestSSHTunnel_BinaryRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	payload := []byte("SSH-2.0-test\r\n")
 	if err := conn.WriteMessage(websocket.BinaryMessage, payload); err != nil {
@@ -49,7 +49,7 @@ func TestSSHTunnel_RequiresAuth(t *testing.T) {
 
 	conn, resp, err := dialSSHTunnelWS(base, false)
 	if err == nil {
-		conn.Close()
+		_ = conn.Close()
 		t.Fatal("dial without auth succeeded, want 401")
 	}
 	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
@@ -69,7 +69,7 @@ func TestSSHTunnel_TextFrameCloses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if err := conn.WriteMessage(websocket.TextMessage, []byte("nope")); err != nil {
 		t.Fatalf("write text: %v", err)
@@ -97,7 +97,7 @@ func TestSSHTunnel_DialFailureClosesWebsocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	_, _, err = readWSMessage(t, conn, 3*time.Second)
 	if err == nil {
@@ -113,7 +113,7 @@ func TestSSHTunnel_UpstreamCloseClosesWebsocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	accepted := make(chan struct{})
 	go func() {
@@ -133,7 +133,7 @@ func TestSSHTunnel_UpstreamCloseClosesWebsocket(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	<-accepted
 
 	_, _, err = readWSMessage(t, conn, 3*time.Second)
@@ -150,7 +150,7 @@ func TestSSHTunnel_ClientCloseClosesUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 
 	closed := make(chan struct{})
 	go func() {
@@ -216,7 +216,7 @@ func runEchoTCPServer(t *testing.T) (string, func()) {
 				return
 			}
 			go func() {
-				defer conn.Close()
+				defer func() { _ = conn.Close() }()
 				_, _ = io.Copy(conn, conn)
 			}()
 		}

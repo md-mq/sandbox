@@ -22,7 +22,7 @@ func TestStat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat file: %v", err)
 	}
-	if fileStat.Path != file || fileStat.Type != "file" || fileStat.Size != 3 || fileStat.Mode != "0640" {
+	if fileStat.Path != file || fileStat.Type != entryTypeFile || fileStat.Size != 3 || fileStat.Mode != "0640" {
 		t.Fatalf("file stat = %+v, want file size 3 mode 0640", fileStat)
 	}
 	if fileStat.SymlinkTarget != nil {
@@ -33,7 +33,7 @@ func TestStat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat dir: %v", err)
 	}
-	if dirStat.Type != "dir" {
+	if dirStat.Type != entryTypeDir {
 		t.Fatalf("dir type = %q, want dir", dirStat.Type)
 	}
 
@@ -41,7 +41,7 @@ func TestStat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat link: %v", err)
 	}
-	if linkStat.Type != "symlink" || linkStat.SymlinkTarget == nil || *linkStat.SymlinkTarget != "file.txt" {
+	if linkStat.Type != entryTypeSymlink || linkStat.SymlinkTarget == nil || *linkStat.SymlinkTarget != "file.txt" {
 		t.Fatalf("link stat = %+v, want symlink target file.txt", linkStat)
 	}
 }

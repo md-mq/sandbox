@@ -109,7 +109,7 @@ func readAt(path string, offset, max int64) ([]byte, int64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	fi, err := f.Stat()
 	if err != nil {

@@ -118,7 +118,7 @@ func writeSSHWSBinary(wsConn *websocket.Conn, data []byte) error {
 }
 
 func (s *Server) closeSSHTunnelWithError(wsConn *websocket.Conn, message string) {
-	defer wsConn.Close()
+	defer func() { _ = wsConn.Close() }()
 	_ = wsConn.WriteControl(
 		websocket.CloseMessage,
 		websocket.FormatCloseMessage(websocket.CloseTryAgainLater, message),

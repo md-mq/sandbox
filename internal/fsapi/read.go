@@ -26,7 +26,7 @@ func ReadAt(path string, offset, max int64) (ReadResult, error) {
 	if err != nil {
 		return ReadResult{}, mapOSError(err, "open file")
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
 	if err != nil {

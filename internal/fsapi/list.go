@@ -63,7 +63,7 @@ func listRecursive(root, dir, rel string, maxEntries int, out *[]Entry) error {
 	end := len(*out)
 	for i := start; i < end; i++ {
 		entry := (*out)[i]
-		if entry.Type != "dir" {
+		if entry.Type != entryTypeDir {
 			continue
 		}
 		if err := listRecursive(root, filepath.Join(root, entry.Name), entry.Name, maxEntries, out); err != nil {

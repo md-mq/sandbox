@@ -49,7 +49,7 @@ func doJSON(t *testing.T, method, url, body string) *http.Response {
 
 func decodeJSON(t *testing.T, resp *http.Response, v any) {
 	t.Helper()
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if err := json.NewDecoder(resp.Body).Decode(v); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestExec_StreamEmitsEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do: %v", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
 		t.Fatalf("content-type = %q, want text/event-stream*", ct)
@@ -139,7 +139,7 @@ func TestExec_StreamEmitsEvents(t *testing.T) {
 	// There should be at least one stdout event containing some of the output.
 	foundStdout := false
 	for _, ev := range events {
-		if ev.event == "stdout" && strings.Contains(ev.data, "one") {
+		if ev.event == stdoutEvent && strings.Contains(ev.data, "one") {
 			foundStdout = true
 		}
 	}
@@ -174,7 +174,7 @@ func TestExec_StreamDisconnectDoesNotKillChild(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	cancel()
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -262,7 +262,7 @@ func TestExec_PerFieldCaps(t *testing.T) {
 			if resp.StatusCode != http.StatusBadRequest {
 				t.Fatalf("status = %d, want 400", resp.StatusCode)
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		})
 	}
 }
@@ -327,7 +327,7 @@ func TestExec_BgTagRoundTrip(t *testing.T) {
 		t.Fatalf("response tag = %q, want smoke.exec", start.Tag)
 	}
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "").Body.Close()
 	})
 
 	r := doJSON(t, http.MethodGet, base+"/exec/bg/"+start.ExecID, "")
@@ -348,7 +348,7 @@ func TestExec_BgTagValidation(t *testing.T) {
 		if resp.StatusCode != http.StatusBadRequest {
 			t.Fatalf("tag %q status = %d, want 400", tag, resp.StatusCode)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	resp := doJSON(t, http.MethodPost, base+"/exec/bg", `{"command":["true"],"tag":""}`)
@@ -360,13 +360,13 @@ func TestExec_BgTagValidation(t *testing.T) {
 	if start.Tag != "" {
 		t.Errorf("empty tag response = %q, want omitted/empty", start.Tag)
 	}
-	doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "").Body.Close()
+	_ = doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "").Body.Close()
 
 	resp = doJSON(t, http.MethodPost, base+"/exec", `{"command":["true"],"tag":"sync"}`)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("sync tag status = %d, want 400", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 func TestExec_BgTagRunningConflict(t *testing.T) {
@@ -381,7 +381,7 @@ func TestExec_BgTagRunningConflict(t *testing.T) {
 	var start execBgResponse
 	decodeJSON(t, resp, &start)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "").Body.Close()
 	})
 
 	resp = doJSON(t, http.MethodPost, base+"/exec/bg",
@@ -437,7 +437,7 @@ func TestExec_BgTagConcurrentConflict(t *testing.T) {
 		case http.StatusAccepted:
 			accepted++
 			t.Cleanup(func() {
-				doJSON(t, http.MethodDelete, base+"/exec/bg/"+res.start.ExecID, "").Body.Close()
+				_ = doJSON(t, http.MethodDelete, base+"/exec/bg/"+res.start.ExecID, "").Body.Close()
 			})
 		case http.StatusConflict:
 			conflicts++
@@ -459,7 +459,7 @@ func TestExec_BgListAndTagFilter(t *testing.T) {
 	base := runHTTPServer(t, s)
 
 	tags := []string{"alpha", "beta", ""}
-	var ids []string
+	ids := make([]string, 0, len(tags))
 	for _, tag := range tags {
 		body := `{"command":["sleep","5"],"timeout_ms":10000`
 		if tag != "" {
@@ -476,7 +476,7 @@ func TestExec_BgListAndTagFilter(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, id := range ids {
-			doJSON(t, http.MethodDelete, base+"/exec/bg/"+id, "").Body.Close()
+			_ = doJSON(t, http.MethodDelete, base+"/exec/bg/"+id, "").Body.Close()
 		}
 	})
 
@@ -497,7 +497,7 @@ func TestExec_BgListAndTagFilter(t *testing.T) {
 	if r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid tag filter status = %d, want 400", r.StatusCode)
 	}
-	r.Body.Close()
+	_ = r.Body.Close()
 }
 
 func TestExec_DeleteRemovesDirAndFreesTag(t *testing.T) {
@@ -516,7 +516,7 @@ func TestExec_DeleteRemovesDirAndFreesTag(t *testing.T) {
 	if del.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete status = %d, want 204", del.StatusCode)
 	}
-	del.Body.Close()
+	_ = del.Body.Close()
 	if _, err := os.Stat(filepath.Join(s.cfg.StateDir, start.ExecID)); !os.IsNotExist(err) {
 		t.Fatalf("exec dir should be removed, stat err = %v", err)
 	}
@@ -527,7 +527,7 @@ func TestExec_DeleteRemovesDirAndFreesTag(t *testing.T) {
 		t.Fatalf("reuse tag status = %d, want 202", resp.StatusCode)
 	}
 	decodeJSON(t, resp, &start)
-	doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "").Body.Close()
+	_ = doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "").Body.Close()
 }
 
 func TestExec_DeleteDoesNotResurrectAfterRestart(t *testing.T) {
@@ -571,7 +571,7 @@ func TestExec_DeleteDoesNotResurrectAfterRestart(t *testing.T) {
 	if del.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete status = %d, want 204", del.StatusCode)
 	}
-	del.Body.Close()
+	_ = del.Body.Close()
 	ts1.Close()
 	_ = s1.Shutdown(context.Background())
 
@@ -590,7 +590,7 @@ func TestExec_DeleteDoesNotResurrectAfterRestart(t *testing.T) {
 		t.Fatalf("reuse after restart status = %d, want 202", resp.StatusCode)
 	}
 	decodeJSON(t, resp, &start)
-	doJSON(t, http.MethodDelete, ts2.URL+"/exec/bg/"+start.ExecID, "").Body.Close()
+	_ = doJSON(t, http.MethodDelete, ts2.URL+"/exec/bg/"+start.ExecID, "").Body.Close()
 }
 
 func TestExec_BgDeleteRunning(t *testing.T) {
@@ -608,14 +608,14 @@ func TestExec_BgDeleteRunning(t *testing.T) {
 	if r.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete status = %d, want 204", r.StatusCode)
 	}
-	r.Body.Close()
+	_ = r.Body.Close()
 
 	// Exec should be gone from the map.
 	r = doJSON(t, http.MethodGet, base+"/exec/bg/"+start.ExecID, "")
 	if r.StatusCode != http.StatusNotFound {
 		t.Fatalf("post-delete status = %d, want 404", r.StatusCode)
 	}
-	r.Body.Close()
+	_ = r.Body.Close()
 }
 
 func TestExec_BgSignalInvalid(t *testing.T) {
@@ -629,7 +629,7 @@ func TestExec_BgSignalInvalid(t *testing.T) {
 	}
 	decodeJSON(t, resp, &start)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "").Body.Close()
 	})
 
 	r := doJSON(t, http.MethodPost, base+"/exec/bg/"+start.ExecID+"/signal",
@@ -637,13 +637,13 @@ func TestExec_BgSignalInvalid(t *testing.T) {
 	if r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", r.StatusCode)
 	}
-	r.Body.Close()
+	_ = r.Body.Close()
 
 	del := doJSON(t, http.MethodDelete, base+"/exec/bg/"+start.ExecID, "")
 	if del.StatusCode != http.StatusNoContent {
 		t.Errorf("cleanup DELETE status = %d, want 204", del.StatusCode)
 	}
-	del.Body.Close()
+	_ = del.Body.Close()
 }
 
 func TestExec_CapExceeded(t *testing.T) {
@@ -651,7 +651,7 @@ func TestExec_CapExceeded(t *testing.T) {
 	s := newTestServer(t, false)
 	base := runHTTPServer(t, s)
 
-	var ids []string
+	ids := make([]string, 0, 4)
 	for i := 0; i < 4; i++ {
 		resp := doJSON(t, http.MethodPost, base+"/exec/bg",
 			`{"command":["sleep","30"],"timeout_ms":60000}`)
@@ -666,7 +666,7 @@ func TestExec_CapExceeded(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, id := range ids {
-			doJSON(t, http.MethodDelete, base+"/exec/bg/"+id, "").Body.Close()
+			_ = doJSON(t, http.MethodDelete, base+"/exec/bg/"+id, "").Body.Close()
 		}
 	})
 
@@ -701,7 +701,7 @@ func TestExec_PingReflectsRunningCount(t *testing.T) {
 		if resp.StatusCode != http.StatusAccepted {
 			t.Fatalf("bg status = %d", resp.StatusCode)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 
 	r := doJSON(t, http.MethodGet, base+"/ping", "")
@@ -818,7 +818,7 @@ func TestExec_CombinedStreamRejected(t *testing.T) {
 	if r.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", r.StatusCode)
 	}
-	r.Body.Close()
+	_ = r.Body.Close()
 }
 
 // sseEvent is a parsed SSE record.

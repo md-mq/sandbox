@@ -130,7 +130,7 @@ func TestManager_ExitedRetainedDoesNotHoldCap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Allocate exited: %v", err)
 	}
-	waitDone(t, exited.Done(), 3*time.Second)
+	waitDone(t, exited.Done())
 	waitForPTYCounter(t, counter, 0)
 
 	running, err := mgr.Allocate(AllocateRequest{Command: []string{"sleep", "30"}, Tag: "next"})
@@ -184,7 +184,7 @@ func TestManager_TagConflictExitedRetained(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Allocate: %v", err)
 	}
-	waitDone(t, s.Done(), 3*time.Second)
+	waitDone(t, s.Done())
 	waitForPTYCounter(t, counter, 0)
 
 	_, err = mgr.Allocate(AllocateRequest{Command: []string{"true"}, Tag: "once"})
@@ -281,7 +281,7 @@ func TestManager_TerminalTTLRemovesExitedRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Allocate: %v", err)
 	}
-	waitDone(t, s.Done(), 3*time.Second)
+	waitDone(t, s.Done())
 	waitForPTYCounter(t, counter, 0)
 	if _, ok := mgr.Get(s.ID); !ok {
 		t.Fatalf("exited record should be retained before terminal TTL")

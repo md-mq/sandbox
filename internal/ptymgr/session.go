@@ -327,7 +327,7 @@ func (s *PTYSession) inputPump() {
 
 func (s *PTYSession) outputPump() {
 	defer close(s.outputDone)
-	defer s.closeMaster()
+	defer func() { _ = s.closeMaster() }()
 
 	buf := make([]byte, ptyReadBufSize)
 	for {

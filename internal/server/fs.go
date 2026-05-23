@@ -13,12 +13,11 @@ import (
 )
 
 const (
-	defaultFSReadBytes  = 1 << 20
-	maxFSReadBytes      = 16 << 20
-	maxFSWriteBytes     = 16 << 20
-	maxFSMkdirBodyBytes = 1 << 20
-	defaultFSLsEntries  = 1000
-	maxFSLsEntries      = 10000
+	defaultFSReadBytes = 1 << 20
+	maxFSReadBytes     = 16 << 20
+	maxFSWriteBytes    = 16 << 20
+	defaultFSLsEntries = 1000
+	maxFSLsEntries     = 10000
 )
 
 func (s *Server) handleFSRead(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +135,7 @@ type fsPathResponse struct {
 
 func (s *Server) handleFSMkdir(w http.ResponseWriter, r *http.Request) {
 	var body fsMkdirRequest
-	if !s.decodeJSONBody(w, r, maxFSMkdirBodyBytes, &body) {
+	if !s.decodeJSONBody(w, r, &body) {
 		return
 	}
 	path, err := fsapi.ValidatePath(body.Path)

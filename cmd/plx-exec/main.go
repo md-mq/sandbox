@@ -13,7 +13,8 @@ import (
 )
 
 // version is overridden at build time via:
-//   go build -ldflags "-X main.version=<sha>"
+//
+//	go build -ldflags "-X main.version=<sha>"
 var version = "dev"
 
 func main() {

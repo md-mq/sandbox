@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+const (
+	entryTypeDir     = "dir"
+	entryTypeFile    = "file"
+	entryTypeSymlink = "symlink"
+	entryTypeOther   = "other"
+)
+
 type StatResult struct {
 	Path          string    `json:"path"`
 	Type          string    `json:"type"`
@@ -62,7 +69,7 @@ func entryFromInfo(path string, info os.FileInfo) (Entry, error) {
 		Mtime: info.ModTime().UTC(),
 		Mode:  fmt.Sprintf("%04o", info.Mode().Perm()),
 	}
-	if entry.Type == "symlink" {
+	if entry.Type == entryTypeSymlink {
 		target, err := os.Readlink(path)
 		if err != nil {
 			return Entry{}, mapOSError(err, "read symlink")
@@ -76,13 +83,13 @@ func entryType(info os.FileInfo) string {
 	mode := info.Mode()
 	switch {
 	case mode.IsDir():
-		return "dir"
+		return entryTypeDir
 	case mode&os.ModeSymlink != 0:
-		return "symlink"
+		return entryTypeSymlink
 	case mode.IsRegular():
-		return "file"
+		return entryTypeFile
 	default:
-		return "other"
+		return entryTypeOther
 	}
 }
 

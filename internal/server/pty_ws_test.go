@@ -15,20 +15,22 @@ import (
 	"github.com/polyaxon/sandbox/internal/ptymgr"
 )
 
+const ptyAttachedFrame = "attached"
+
 func TestPTYWS_AttachWriteDetach(t *testing.T) {
 	s := newTestServer(t, false)
 	base := runHTTPServer(t, s)
 	created := createPTY(t, base, `{"command":["/bin/sh"]}`)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 
 	conn, resp, err := dialPTYWS(base, created.PTYID, "")
 	if err != nil {
 		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
 	}
-	attached := readWSText(t, conn, 3*time.Second)
-	if attached["type"] != "attached" || attached["pty_id"] != created.PTYID {
+	attached := readWSText(t, conn)
+	if attached["type"] != ptyAttachedFrame || attached["pty_id"] != created.PTYID {
 		t.Fatalf("attached frame = %#v", attached)
 	}
 	if st := getPTYStatus(t, base, created.PTYID); !st.Attached || st.DetachedSince != nil {
@@ -53,7 +55,7 @@ func TestPTYWS_ReplayBytes(t *testing.T) {
 	base := runHTTPServer(t, s)
 	created := createPTY(t, base, `{"command":["sh","-c","printf before; sleep 30"]}`)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 	waitPTYReplayReady(t, s, created.PTYID, 6)
 
@@ -61,9 +63,9 @@ func TestPTYWS_ReplayBytes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
 	}
-	defer conn.Close()
-	attached := readWSText(t, conn, 3*time.Second)
-	if attached["type"] != "attached" {
+	defer func() { _ = conn.Close() }()
+	attached := readWSText(t, conn)
+	if attached["type"] != ptyAttachedFrame {
 		t.Fatalf("first frame = %#v, want attached", attached)
 	}
 	mt, data, err := readWSMessage(t, conn, 3*time.Second)
@@ -80,19 +82,19 @@ func TestPTYWS_AlreadyAttachedConflict(t *testing.T) {
 	base := runHTTPServer(t, s)
 	created := createPTY(t, base, `{"command":["sleep","30"]}`)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 
 	conn, resp, err := dialPTYWS(base, created.PTYID, "")
 	if err != nil {
 		t.Fatalf("first dial: %v status=%v", err, responseStatus(resp))
 	}
-	defer conn.Close()
-	readWSText(t, conn, 3*time.Second)
+	defer func() { _ = conn.Close() }()
+	readWSText(t, conn)
 
 	second, resp, err := dialPTYWS(base, created.PTYID, "")
 	if err == nil {
-		second.Close()
+		_ = second.Close()
 		t.Fatal("second dial succeeded, want 409")
 	}
 	if resp == nil || resp.StatusCode != http.StatusConflict {
@@ -105,15 +107,15 @@ func TestPTYWS_ControlResizeAndSignalError(t *testing.T) {
 	base := runHTTPServer(t, s)
 	created := createPTY(t, base, `{"command":["sleep","30"]}`)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 
 	conn, resp, err := dialPTYWS(base, created.PTYID, "")
 	if err != nil {
 		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
 	}
-	defer conn.Close()
-	readWSText(t, conn, 3*time.Second)
+	defer func() { _ = conn.Close() }()
+	readWSText(t, conn)
 
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"resize","cols":111,"rows":33}`)); err != nil {
 		t.Fatalf("write resize: %v", err)
@@ -134,7 +136,7 @@ func TestPTYWS_ControlResizeAndSignalError(t *testing.T) {
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"signal","signal":"SIGWINCH"}`)); err != nil {
 		t.Fatalf("write invalid signal: %v", err)
 	}
-	msg := readWSText(t, conn, 3*time.Second)
+	msg := readWSText(t, conn)
 	if msg["type"] != "error" {
 		t.Fatalf("control error frame = %#v", msg)
 	}
@@ -144,14 +146,14 @@ func TestPTYWS_AttachExitedReturnsGone(t *testing.T) {
 	s := newTestServer(t, false)
 	base := runHTTPServer(t, s)
 	created := createPTY(t, base, `{"command":["sh","-c","exit 0"]}`)
-	waitPTYState(t, base, created.PTYID, ptymgr.StateExited)
+	waitPTYState(t, base, created.PTYID)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 
 	conn, resp, err := dialPTYWS(base, created.PTYID, "")
 	if err == nil {
-		conn.Close()
+		_ = conn.Close()
 		t.Fatal("dial exited succeeded, want 410")
 	}
 	if resp == nil || resp.StatusCode != http.StatusGone {
@@ -164,16 +166,16 @@ func TestPTYWS_ExitWhileAttachedSendsExited(t *testing.T) {
 	base := runHTTPServer(t, s)
 	created := createPTY(t, base, `{"command":["sh","-c","sleep 0.1; printf done; exit 0"]}`)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 
 	conn, resp, err := dialPTYWS(base, created.PTYID, "")
 	if err != nil {
 		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
 	}
-	defer conn.Close()
-	attached := readWSText(t, conn, 3*time.Second)
-	if attached["type"] != "attached" {
+	defer func() { _ = conn.Close() }()
+	attached := readWSText(t, conn)
+	if attached["type"] != ptyAttachedFrame {
 		t.Fatalf("first frame = %#v, want attached", attached)
 	}
 
@@ -210,12 +212,12 @@ func TestPTYWS_InvalidReplay(t *testing.T) {
 	base := runHTTPServer(t, s)
 	created := createPTY(t, base, `{"command":["sleep","30"]}`)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 
 	conn, resp, err := dialPTYWS(base, created.PTYID, "replay_bytes=4097")
 	if err == nil {
-		conn.Close()
+		_ = conn.Close()
 		t.Fatal("dial invalid replay succeeded, want 400")
 	}
 	if resp == nil || resp.StatusCode != http.StatusBadRequest {
@@ -228,14 +230,14 @@ func TestPTYWS_PingAttachedCounter(t *testing.T) {
 	base := runHTTPServer(t, s)
 	created := createPTY(t, base, `{"command":["sleep","30"]}`)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 
 	conn, resp, err := dialPTYWS(base, created.PTYID, "")
 	if err != nil {
 		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
 	}
-	readWSText(t, conn, 3*time.Second)
+	readWSText(t, conn)
 
 	ping := getPing(t, base)
 	if ping.PTYsAttached != 1 {
@@ -257,15 +259,15 @@ func TestPTYWS_FramesTouchLastActivity(t *testing.T) {
 	base := runHTTPServer(t, s)
 	created := createPTY(t, base, `{"command":["/bin/sh"]}`)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 
 	conn, resp, err := dialPTYWS(base, created.PTYID, "")
 	if err != nil {
 		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
 	}
-	defer conn.Close()
-	readWSText(t, conn, 3*time.Second)
+	defer func() { _ = conn.Close() }()
+	readWSText(t, conn)
 
 	before := s.counters.LastActivity()
 	time.Sleep(2 * time.Millisecond)
@@ -294,15 +296,15 @@ func TestPTYWS_HeartbeatTimeoutDetaches(t *testing.T) {
 	base := runHTTPServer(t, s)
 	created := createPTY(t, base, `{"command":["sleep","30"]}`)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 
 	conn, resp, err := dialPTYWS(base, created.PTYID, "")
 	if err != nil {
 		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
 	}
-	defer conn.Close()
-	readWSText(t, conn, 3*time.Second)
+	defer func() { _ = conn.Close() }()
+	readWSText(t, conn)
 
 	waitPTYDetached(t, base, created.PTYID)
 	if st := getPTYStatus(t, base, created.PTYID); st.State != ptymgr.StateRunning {
@@ -315,14 +317,14 @@ func TestPTYWS_OversizeFrameDetachesSessionSurvives(t *testing.T) {
 	base := runHTTPServer(t, s)
 	created := createPTY(t, base, `{"command":["sleep","30"]}`)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 
 	conn, resp, err := dialPTYWS(base, created.PTYID, "")
 	if err != nil {
 		t.Fatalf("dial: %v status=%v", err, responseStatus(resp))
 	}
-	readWSText(t, conn, 3*time.Second)
+	readWSText(t, conn)
 
 	if err := conn.WriteMessage(websocket.BinaryMessage, bytes.Repeat([]byte("x"), maxPTYBodyBytes+1)); err != nil {
 		t.Fatalf("write oversize frame: %v", err)
@@ -344,7 +346,7 @@ func TestPTYWS_OversizeFrameDetachesSessionSurvives(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reattach after oversize: %v status=%v", err, responseStatus(resp))
 	}
-	conn.Close()
+	_ = conn.Close()
 }
 
 func dialPTYWS(base, id, rawQuery string) (*websocket.Conn, *http.Response, error) {
@@ -365,9 +367,9 @@ func dialPTYWS(base, id, rawQuery string) (*websocket.Conn, *http.Response, erro
 	return websocket.DefaultDialer.Dial(u.String(), header)
 }
 
-func readWSText(t *testing.T, conn *websocket.Conn, timeout time.Duration) map[string]any {
+func readWSText(t *testing.T, conn *websocket.Conn) map[string]any {
 	t.Helper()
-	mt, data, err := readWSMessage(t, conn, timeout)
+	mt, data, err := readWSMessage(t, conn, 3*time.Second)
 	if err != nil {
 		t.Fatalf("read text: %v", err)
 	}

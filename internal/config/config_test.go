@@ -267,6 +267,6 @@ func clearEnv(t *testing.T) {
 		envPTYHeartbeat, envPTYPongTimeout, envPTYReplayBytes,
 	} {
 		t.Setenv(k, "")
-		os.Unsetenv(k)
+		_ = os.Unsetenv(k)
 	}
 }

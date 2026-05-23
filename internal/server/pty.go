@@ -21,9 +21,10 @@ import (
 )
 
 const (
-	maxPTYBodyBytes = 1 << 20
-	maxPTYDimension = 1000
-	wsWriteTimeout  = 10 * time.Second
+	maxJSONBodyBytes = 1 << 20
+	maxPTYBodyBytes  = 1 << 20
+	maxPTYDimension  = 1000
+	wsWriteTimeout   = 10 * time.Second
 )
 
 var ptyWSUpgrader = websocket.Upgrader{
@@ -136,7 +137,7 @@ type ptyCreateResponse struct {
 
 func (s *Server) handlePTYCreate(w http.ResponseWriter, r *http.Request) {
 	var body ptyCreateRequest
-	if !s.decodeJSONBody(w, r, maxPTYBodyBytes, &body) {
+	if !s.decodeJSONBody(w, r, &body) {
 		return
 	}
 	req, err := body.toAllocateRequest()
@@ -262,7 +263,7 @@ func (s *Server) handlePTYResize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body ptyResizeRequest
-	if !s.decodeJSONBody(w, r, maxPTYBodyBytes, &body) {
+	if !s.decodeJSONBody(w, r, &body) {
 		return
 	}
 	cols, err := requiredPTYDimension(body.Cols, "cols")
@@ -305,7 +306,7 @@ func (s *Server) handlePTYSignal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body ptySignalRequest
-	if !s.decodeJSONBody(w, r, maxPTYBodyBytes, &body) {
+	if !s.decodeJSONBody(w, r, &body) {
 		return
 	}
 	if !validPTYSignal(body.Signal) {
@@ -358,7 +359,7 @@ func (s *Server) parseReplayBytes(w http.ResponseWriter, r *http.Request) (int, 
 }
 
 func (s *Server) runPTYWebsocket(conn *websocket.Conn, session *ptymgr.PTYSession, attachment *ptymgr.Attachment) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	defer attachment.Release()
 
 	heartbeat := s.cfg.PTYHeartbeat
@@ -490,15 +491,15 @@ func (s *Server) handlePTYWSControl(session *ptymgr.PTYSession, data []byte) err
 	}
 }
 
-func (s *Server) decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes int64, dst any) bool {
-	r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
+func (s *Server) decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeError(w, s.log, http.StatusRequestEntityTooLarge, CodePayloadTooLarge,
-				fmt.Sprintf("request body exceeds %d bytes", maxBytes))
+				fmt.Sprintf("request body exceeds %d bytes", maxJSONBodyBytes))
 			return false
 		}
 		writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest, "malformed JSON body")
@@ -509,7 +510,7 @@ func (s *Server) decodeJSONBody(w http.ResponseWriter, r *http.Request, maxBytes
 		var maxErr *http.MaxBytesError
 		if errors.As(err, &maxErr) {
 			writeError(w, s.log, http.StatusRequestEntityTooLarge, CodePayloadTooLarge,
-				fmt.Sprintf("request body exceeds %d bytes", maxBytes))
+				fmt.Sprintf("request body exceeds %d bytes", maxJSONBodyBytes))
 			return false
 		}
 		writeError(w, s.log, http.StatusBadRequest, CodeInvalidRequest, "body contains trailing data after JSON")
@@ -619,7 +620,7 @@ func writePTYGoneWithStatus(w http.ResponseWriter, log *slog.Logger, st ptymgr.P
 }
 
 func (s *Server) writeAttachUpgradeError(conn *websocket.Conn, err error) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
 	code := CodeInternal
 	switch {

@@ -42,7 +42,7 @@ func TestFS_RoundTrip(t *testing.T) {
 		t.Fatalf("content-type = %q, want application/octet-stream", ct)
 	}
 	raw, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestFS_RoundTrip(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("rm status = %d, want 200", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("file still exists after rm: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestFS_ReadOffsetLengthHeaders(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 	raw, err := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if err != nil {
 		t.Fatalf("read body: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestFS_WriteBodyCap(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("exact cap status = %d, want 200", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if info, err := os.Stat(exactPath); err != nil || info.Size() != maxFSWriteBytes {
 		t.Fatalf("exact file size = %v/%v, want %d", info, err, maxFSWriteBytes)
 	}
@@ -263,7 +263,7 @@ func TestFS_MkdirParents(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if info, err := os.Stat(path); err != nil || !info.IsDir() {
 		t.Fatalf("path was not created as directory: info=%v err=%v", info, err)
 	}
@@ -285,14 +285,14 @@ func TestFS_RemoveRecursiveFlag(t *testing.T) {
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("non-recursive status = %d, want 409", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	resp = doFS(t, http.MethodDelete,
 		base+"/fs/rm?path="+url.QueryEscape(tree)+"&recursive=true", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("recursive status = %d, want 200", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if _, err := os.Stat(tree); !os.IsNotExist(err) {
 		t.Fatalf("tree still exists after recursive rm: %v", err)
 	}
@@ -315,7 +315,7 @@ func TestFS_ForbiddenMapping(t *testing.T) {
 
 	resp := doFS(t, http.MethodGet, base+"/fs/read?path="+url.QueryEscape(path), nil)
 	if resp.StatusCode == http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		t.Skip("chmod 000 did not block read on this filesystem")
 	}
 	if resp.StatusCode != http.StatusForbidden {
@@ -378,7 +378,7 @@ func TestFS_ActivityTouched(t *testing.T) {
 	before := s.counters.LastActivity()
 	time.Sleep(time.Millisecond)
 	resp := doFS(t, http.MethodGet, base+"/fs/stat?path="+url.QueryEscape(path), nil)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}

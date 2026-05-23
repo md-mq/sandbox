@@ -59,13 +59,13 @@ func TestPTY_CreateStatusListDelete(t *testing.T) {
 	if del.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete status = %d, want 204", del.StatusCode)
 	}
-	del.Body.Close()
+	_ = del.Body.Close()
 
 	r := doJSON(t, http.MethodGet, base+"/pty/"+created.PTYID, "")
 	if r.StatusCode != http.StatusNotFound {
 		t.Fatalf("status after delete = %d, want 404", r.StatusCode)
 	}
-	r.Body.Close()
+	_ = r.Body.Close()
 }
 
 func TestPTY_DefaultsAndPingCounter(t *testing.T) {
@@ -79,7 +79,7 @@ func TestPTY_DefaultsAndPingCounter(t *testing.T) {
 	var created ptyCreateResponse
 	decodeJSON(t, resp, &created)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 	if created.Cols != 80 || created.Rows != 24 {
 		t.Fatalf("default size = %dx%d, want 80x24", created.Cols, created.Rows)
@@ -105,7 +105,7 @@ func TestPTY_NaturalExitRetainedAndTagConflict(t *testing.T) {
 	var created ptyCreateResponse
 	decodeJSON(t, resp, &created)
 
-	status := waitPTYState(t, base, created.PTYID, ptymgr.StateExited)
+	status := waitPTYState(t, base, created.PTYID)
 	if status.ExitCode == nil || *status.ExitCode != 7 {
 		t.Fatalf("exit_code = %v, want 7", status.ExitCode)
 	}
@@ -128,7 +128,7 @@ func TestPTY_NaturalExitRetainedAndTagConflict(t *testing.T) {
 	if del.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete exited status = %d, want 204", del.StatusCode)
 	}
-	del.Body.Close()
+	_ = del.Body.Close()
 
 	resp = doJSON(t, http.MethodPost, base+"/pty",
 		`{"command":["sleep","30"],"tag":"once"}`)
@@ -136,7 +136,7 @@ func TestPTY_NaturalExitRetainedAndTagConflict(t *testing.T) {
 		t.Fatalf("tag reuse status = %d, want 201", resp.StatusCode)
 	}
 	decodeJSON(t, resp, &created)
-	doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+	_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 }
 
 func TestPTY_CapExceeded(t *testing.T) {
@@ -155,7 +155,7 @@ func TestPTY_CapExceeded(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		for _, id := range ids {
-			doJSON(t, http.MethodDelete, base+"/pty/"+id, "").Body.Close()
+			_ = doJSON(t, http.MethodDelete, base+"/pty/"+id, "").Body.Close()
 		}
 	})
 
@@ -179,7 +179,7 @@ func TestPTY_Resize(t *testing.T) {
 
 	created := createPTY(t, base, `{"command":["sleep","30"]}`)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 
 	resp := doJSON(t, http.MethodPost, base+"/pty/"+created.PTYID+"/resize",
@@ -187,7 +187,7 @@ func TestPTY_Resize(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("resize status = %d, want 204", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	status := getPTYStatus(t, base, created.PTYID)
 	if status.Cols != 120 || status.Rows != 50 {
@@ -203,7 +203,7 @@ func TestPTY_SignalTERM(t *testing.T) {
 	body := `{"command":["sh","-c","trap 'printf term > term.txt; exit 0' TERM; printf ready > ready.txt; while :; do sleep 1; done"],"workdir":` + strconv.Quote(dir) + `}`
 	created := createPTY(t, base, body)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 	waitForFileContent(t, filepath.Join(dir, "ready.txt"), "ready", 3*time.Second)
 
@@ -212,10 +212,10 @@ func TestPTY_SignalTERM(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("signal status = %d, want 204", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	waitForFileContent(t, filepath.Join(dir, "term.txt"), "term", 3*time.Second)
-	waitPTYState(t, base, created.PTYID, ptymgr.StateExited)
+	waitPTYState(t, base, created.PTYID)
 }
 
 func TestPTY_ExitedResizeAndSignalReturnGone(t *testing.T) {
@@ -223,9 +223,9 @@ func TestPTY_ExitedResizeAndSignalReturnGone(t *testing.T) {
 	base := runHTTPServer(t, s)
 
 	created := createPTY(t, base, `{"command":["sh","-c","exit 0"]}`)
-	waitPTYState(t, base, created.PTYID, ptymgr.StateExited)
+	waitPTYState(t, base, created.PTYID)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 
 	resp := doJSON(t, http.MethodPost, base+"/pty/"+created.PTYID+"/resize",
@@ -233,14 +233,14 @@ func TestPTY_ExitedResizeAndSignalReturnGone(t *testing.T) {
 	if resp.StatusCode != http.StatusGone {
 		t.Fatalf("resize exited status = %d, want 410", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	resp = doJSON(t, http.MethodPost, base+"/pty/"+created.PTYID+"/signal",
 		`{"signal":"SIGTERM"}`)
 	if resp.StatusCode != http.StatusGone {
 		t.Fatalf("signal exited status = %d, want 410", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 func TestPTY_ValidationFailures(t *testing.T) {
@@ -276,26 +276,26 @@ func TestPTY_ValidationFailures(t *testing.T) {
 				}
 				return
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 		})
 	}
 
 	created := createPTY(t, base, `{"command":["sleep","30"]}`)
 	t.Cleanup(func() {
-		doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
+		_ = doJSON(t, http.MethodDelete, base+"/pty/"+created.PTYID, "").Body.Close()
 	})
 	resp := doJSON(t, http.MethodPost, base+"/pty/"+created.PTYID+"/signal",
 		`{"signal":"SIGWINCH"}`)
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid signal status = %d, want 400", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	resp = doJSON(t, http.MethodGet, base+"/pty?tag=bad/tag", "")
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("bad tag filter status = %d, want 400", resp.StatusCode)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 }
 
 func createPTY(t *testing.T, base, body string) ptyCreateResponse {
@@ -331,24 +331,24 @@ func getPTYList(t *testing.T, base, query string) ptyListResponse {
 	return list
 }
 
-func waitPTYState(t *testing.T, base, id, want string) ptyStatusResponse {
+func waitPTYState(t *testing.T, base, id string) ptyStatusResponse {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	var last ptyStatusResponse
 	for time.Now().Before(deadline) {
 		resp := doJSON(t, http.MethodGet, base+"/pty/"+id, "")
 		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			time.Sleep(20 * time.Millisecond)
 			continue
 		}
 		decodeJSON(t, resp, &last)
-		if last.State == want {
+		if last.State == ptymgr.StateExited {
 			return last
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("pty %s state = %q, want %q", id, last.State, want)
+	t.Fatalf("pty %s state = %q, want %q", id, last.State, ptymgr.StateExited)
 	return last
 }
 

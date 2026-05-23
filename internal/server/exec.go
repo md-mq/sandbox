@@ -50,6 +50,8 @@ var allowedSignals = map[string]syscall.Signal{
 	"SIGUSR2": syscall.SIGUSR2,
 }
 
+const stdoutEvent = "stdout"
+
 // execRequest is the wire shape for POST /exec, /exec/stream, /exec/bg.
 type execRequest struct {
 	Command   []string           `json:"command"`
@@ -60,6 +62,7 @@ type execRequest struct {
 	TimeoutMS int                `json:"timeout_ms"`
 }
 
+//nolint:gocyclo // Linear request validation keeps API errors ordered by request shape.
 func (r *execRequest) toStartRequest(allowTag bool) (execmgr.StartRequest, error) {
 	if len(r.Command) == 0 || r.Command[0] == "" {
 		return execmgr.StartRequest{}, fmt.Errorf("%w: command required", execmgr.ErrInvalidRequest)
@@ -329,15 +332,15 @@ func (s *Server) handleExecStream(w http.ResponseWriter, r *http.Request) {
 	for {
 		progressed := false
 
-		if data, next, err := readChunk(e.StdoutPath(), stdoutOff, sseMaxPerPoll); err == nil && len(data) > 0 {
-			writeSSE(w, flusher, "stdout", map[string]any{
+		if data, next, err := readChunk(e.StdoutPath(), stdoutOff); err == nil && len(data) > 0 {
+			writeSSE(w, flusher, stdoutEvent, map[string]any{
 				"text":   string(data),
 				"offset": next,
 			})
 			stdoutOff = next
 			progressed = true
 		}
-		if data, next, err := readChunk(e.StderrPath(), stderrOff, sseMaxPerPoll); err == nil && len(data) > 0 {
+		if data, next, err := readChunk(e.StderrPath(), stderrOff); err == nil && len(data) > 0 {
 			writeSSE(w, flusher, "stderr", map[string]any{
 				"text":   string(data),
 				"offset": next,
@@ -357,13 +360,11 @@ func (s *Server) handleExecStream(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-e.Done():
 			// Drain any remaining bytes once more before emitting completion.
-			if data, next, err := readChunk(e.StdoutPath(), stdoutOff, sseMaxPerPoll); err == nil && len(data) > 0 {
-				writeSSE(w, flusher, "stdout", map[string]any{"text": string(data), "offset": next})
-				stdoutOff = next
+			if data, next, err := readChunk(e.StdoutPath(), stdoutOff); err == nil && len(data) > 0 {
+				writeSSE(w, flusher, stdoutEvent, map[string]any{"text": string(data), "offset": next})
 			}
-			if data, next, err := readChunk(e.StderrPath(), stderrOff, sseMaxPerPoll); err == nil && len(data) > 0 {
+			if data, next, err := readChunk(e.StderrPath(), stderrOff); err == nil && len(data) > 0 {
 				writeSSE(w, flusher, "stderr", map[string]any{"text": string(data), "offset": next})
-				stderrOff = next
 			}
 			status := e.Status()
 			if status != nil {
@@ -526,11 +527,11 @@ func (s *Server) handleExecBgLogs(w http.ResponseWriter, r *http.Request) {
 
 	streamStr := r.URL.Query().Get("stream")
 	if streamStr == "" {
-		streamStr = "stdout"
+		streamStr = stdoutEvent
 	}
 	var stream execmgr.LogStream
 	switch streamStr {
-	case "stdout":
+	case stdoutEvent:
 		stream = execmgr.LogStdout
 	case "stderr":
 		stream = execmgr.LogStderr
@@ -641,7 +642,7 @@ func writeErrorWithDetails(w http.ResponseWriter, log interface{ Error(string, .
 
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, event string, data any) {
 	buf, _ := json.Marshal(data)
-	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, buf)
+	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, buf)
 	flusher.Flush()
 }
 
@@ -658,8 +659,8 @@ func readCapped(path string, max int64) ([]byte, bool) {
 
 // readChunk returns (data, nextOffset, err) — the SSE handler wants cursor
 // semantics, so we adapt ReadAt's (data, fileSize) shape.
-func readChunk(path string, offset, max int64) ([]byte, int64, error) {
-	data, _, err := execmgr.ReadAt(path, offset, max)
+func readChunk(path string, offset int64) ([]byte, int64, error) {
+	data, _, err := execmgr.ReadAt(path, offset, sseMaxPerPoll)
 	return data, offset + int64(len(data)), err
 }
 

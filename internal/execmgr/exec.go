@@ -100,7 +100,7 @@ func newExec(ctx context.Context, id, stateDir string, req StartRequest, log *sl
 	}
 	stderrF, err := os.OpenFile(e.stderrPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		stdoutF.Close()
+		_ = stdoutF.Close()
 		return nil, fmt.Errorf("open stderr log: %w", err)
 	}
 

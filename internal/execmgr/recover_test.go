@@ -25,7 +25,7 @@ func newRecoveryManager(t *testing.T, stateDir string) *Manager {
 	return mgr
 }
 
-func writeExecDir(t *testing.T, root, id string, meta *Meta, pid *int, status *Status) string {
+func writeExecDir(t *testing.T, root, id string, meta *Meta, pid *int, status *Status) {
 	t.Helper()
 	dir := filepath.Join(root, id)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -46,7 +46,6 @@ func writeExecDir(t *testing.T, root, id string, meta *Meta, pid *int, status *S
 			t.Fatalf("WriteStatus: %v", err)
 		}
 	}
-	return dir
 }
 
 func TestRecover_TerminalExitedRecord(t *testing.T) {
